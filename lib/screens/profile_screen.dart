@@ -13,6 +13,7 @@ import '../features/identity/application/identity_service.dart';
 import '../features/identity/domain/hrms_role.dart';
 import '../features/identity/domain/tenant_identity.dart';
 import '../features/lifecycle/presentation/pages/employee_lifecycle_page.dart';
+import '../features/notifications/presentation/pages/notification_center_page.dart';
 import '../features/performance/presentation/pages/performance_page.dart';
 import '../features/reports/presentation/pages/reports_page.dart';
 import '../features/workforce_time/presentation/pages/workforce_time_page.dart';
@@ -476,6 +477,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     const SizedBox(height: 8),
                   ],
                   _buildMenuItem(
+                    icon: Icons.notifications_none_rounded,
+                    title: 'Notifications',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const NotificationCenterPage(),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  _buildMenuItem(
                     icon: Icons.settings_rounded,
                     title: 'Settings',
                     onTap: () {
@@ -495,7 +509,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       showAboutDialog(
                         context: context,
                         applicationName: 'Veyra HRMS',
-                        applicationVersion: '3.1.6',
+                        applicationVersion: '3.1.7',
                         children: const [
                           Text(
                             'Secure multi-tenant workforce operations and HR management.',
@@ -520,7 +534,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 20),
+                  SizedBox(
+                    height: MediaQuery.paddingOf(context).bottom + 104,
+                  ),
                 ]),
               ),
             ),

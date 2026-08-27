@@ -2,6 +2,70 @@
 
 All notable changes to the `qr_scanning` application are documented in this file.
 
+## [3.2.1] - 2026-08-27
+
+### Fixed
+- Fixed the Attendance Policy build failure by providing the required `minute` values to both default `TimeOfDay` instances.
+- Fixed the async navigation context lint in the unsaved-changes back-navigation guard.
+- Restored the zero-error analyzer baseline for the Attendance Policy hardening increment.
+
+### Changed
+- Bumped the application version to `3.2.1+48`.
+
+## [3.2.0] - 2026-08-27
+
+### Completed
+- Replaced the legacy hard-coded HR Memos sample list with a real tenant-scoped Firestore company announcement workflow.
+- Employees can now read company HR announcements published inside their own Veyra workspace.
+- Company Owner and HR Admin can publish, edit, and remove HR memos.
+- Added memo title, body, author, publish timestamp, and update timestamp metadata.
+- Added a professional empty state, live updates, refresh support, loading states, validation, and destructive-action confirmation.
+- Kept the existing `HrMemosScreen` entry point as a compatibility adapter while moving the implementation into a feature-first HR Memos module.
+
+### Security
+- HR Memos are isolated under `/companies/{companyId}/hrMemos`.
+- Active employees can read only memos from their own tenant.
+- Only Company Owner and HR Admin can create, update, or delete company HR memos.
+- Firestore Rules validate memo shape, title/body length, author UID, and immutable creator metadata.
+
+### Changed
+- Removed the runtime dependency on the legacy hard-coded `MemoService` sample data.
+- Bumped the application version to `3.2.0+47`.
+
+## [3.1.8] - 2026-08-27
+
+### Hardened
+- Hardened the existing Attendance Policy screen against backend and session failures.
+- Added a recoverable load-error state instead of leaving the page on a permanent loading spinner when attendance settings cannot be fetched.
+- Reused the shared Firebase/backend error mapper for settings load and save failures.
+- Added duplicate-save protection and disabled policy controls while a save is in progress.
+- Added a visible unsaved-changes guard before leaving Attendance Policy.
+- Added a no-change fast path so unchanged policy data is not sent to the backend.
+- Added validation for work hours and time-zone selection before saving.
+
+### Changed
+- Attendance Policy now stays on-screen after a successful save so HR admins can verify the persisted values instead of being forced back immediately.
+- Bumped the application version to `3.1.8+46`.
+
+## [3.1.7] - 2026-08-27
+
+### Completed
+- Completed the existing Notification Center navigation flow.
+- Added a Notification Center entry to Profile so the existing Firestore notification inbox is reachable from the signed-in application.
+- Leave notifications now open the real Leave workflow.
+- Claim notifications now open the real Claims workflow.
+- Payslip notifications now open the real Payslip workflow.
+- Notifications with unknown or future target types fall back safely without breaking navigation.
+
+### Hardened
+- Added duplicate-action protection for Mark All Read.
+- Added visible backend error feedback for Mark All Read and single-notification read actions.
+- Added a progress state while marking all notifications as read.
+- Preserved the notification as usable even when marking it read fails.
+
+### Changed
+- Bumped the application version to `3.1.7+45`.
+
 ## [3.1.6] - 2026-08-27
 
 ### Fixed

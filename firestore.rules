@@ -241,6 +241,45 @@ service cloud.firestore {
         allow create, update, delete: if false;
       }
 
+      match /hrMemos/{memoId} {
+        allow read: if activeUser() && companyId() == tenantId;
+
+        allow create: if isCompanyAdmin()
+          && companyId() == tenantId
+          && request.resource.data.keys().hasOnly([
+            'title',
+            'body',
+            'authorUid',
+            'authorName',
+            'createdAt',
+            'updatedAt'
+          ])
+          && request.resource.data.title is string
+          && request.resource.data.title.size() >= 3
+          && request.resource.data.title.size() <= 120
+          && request.resource.data.body is string
+          && request.resource.data.body.size() >= 5
+          && request.resource.data.body.size() <= 5000
+          && request.resource.data.authorUid == request.auth.uid
+          && request.resource.data.authorName is string
+          && request.resource.data.authorName.size() <= 120;
+
+        allow update: if isCompanyAdmin()
+          && companyId() == tenantId
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['title', 'body', 'updatedAt'])
+          && request.resource.data.title is string
+          && request.resource.data.title.size() >= 3
+          && request.resource.data.title.size() <= 120
+          && request.resource.data.body is string
+          && request.resource.data.body.size() >= 5
+          && request.resource.data.body.size() <= 5000
+          && request.resource.data.authorUid == resource.data.authorUid
+          && request.resource.data.createdAt == resource.data.createdAt;
+
+        allow delete: if isCompanyAdmin() && companyId() == tenantId;
+      }
+
       match /holidays/{holidayId} {
         allow read: if activeUser() && companyId() == tenantId;
         allow write: if false;
