@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "432151378389",
+    "project_id": "forum-d8b06",
+    "storage_bucket": "forum-d8b06.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:432151378389:android:decaf3933abe61719ae55c",
+        "android_client_info": {
+          "package_name": "com.qrscanning.hrms"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCsLkqvvsezTUJ6hTWF0aNetufnJAz7ghY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

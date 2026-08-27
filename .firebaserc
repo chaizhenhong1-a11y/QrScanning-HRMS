@@ -1,0 +1,11 @@
+{
+  "projects": {},
+  "targets": {},
+  "etags": {
+    "forum-d8b06": {
+      "extensionInstances": {
+        "firestore-send-email": "f580ea3410c9b60ed026b92cad4669c224b9808a88245edf15b986799bc28599"
+      }
+    }
+  }
+}

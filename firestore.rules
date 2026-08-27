@@ -1,0 +1,225 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    function companyPath(tenantId) {
+      return /databases/$(database)/documents/companies/$(tenantId);
+    }
+
+    function invitationPath(invitationId) {
+      return /databases/$(database)/documents/invitations/$(invitationId);
+    }
+
+    function hasUserProfile() {
+      return signedIn() && exists(userPath(request.auth.uid));
+    }
+
+    function userProfile() {
+      return get(userPath(request.auth.uid));
+    }
+
+    function companyId() {
+      return userProfile().data.companyId;
+    }
+
+    function employeeId() {
+      return userProfile().data.employeeId;
+    }
+
+    function activeUser() {
+      return hasUserProfile() && userProfile().data.isActive == true;
+    }
+
+    function companyRole() {
+      return userProfile().data.role;
+    }
+
+    function isCompanyAdmin() {
+      return activeUser()
+        && companyRole() in ['companyOwner', 'hrAdmin'];
+    }
+
+    function canManageAttendance() {
+      return activeUser()
+        && companyRole() in ['companyOwner', 'hrAdmin', 'manager'];
+    }
+
+    function isOwnerOnboarding(tenantId) {
+      return signedIn()
+        && getAfter(companyPath(tenantId)).data.createdBy == request.auth.uid;
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.role == 'companyOwner'
+        && request.resource.data.isActive == true
+        && request.resource.data.companyId is string
+        && isOwnerOnboarding(request.resource.data.companyId);
+
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['displayName', 'updatedAt']);
+
+      allow delete: if false;
+    }
+
+    match /invitations/{invitationId} {
+      allow create, delete: if false;
+
+      allow read: if (
+        isCompanyAdmin() && resource.data.companyId == companyId()
+      ) || (
+        signedIn()
+        && request.auth.token.email == resource.data.email
+        && resource.data.status == 'pending'
+      );
+
+      allow update: if false;
+    }
+
+    match /mail/{mailId} {
+      allow read, write: if false;
+    }
+
+    match /companies/{tenantId} {
+      allow create: if signedIn()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.status == 'active';
+      allow read: if activeUser() && companyId() == tenantId;
+      allow update: if isCompanyAdmin() && companyId() == tenantId;
+      allow delete: if false;
+
+      match /branches/{branchId} {
+        allow read: if activeUser() && companyId() == tenantId;
+        allow create: if (
+          isCompanyAdmin() && companyId() == tenantId
+        ) || isOwnerOnboarding(tenantId);
+        allow update: if isCompanyAdmin() && companyId() == tenantId;
+        allow delete: if false;
+      }
+
+      match /departments/{departmentId} {
+        allow read: if activeUser() && companyId() == tenantId;
+        allow create: if (
+          isCompanyAdmin() && companyId() == tenantId
+        ) || isOwnerOnboarding(tenantId);
+        allow update: if isCompanyAdmin() && companyId() == tenantId;
+        allow delete: if false;
+      }
+
+      match /employees/{targetEmployeeId} {
+        allow read: if activeUser() && companyId() == tenantId;
+
+        allow create: if (
+          isCompanyAdmin()
+          && companyId() == tenantId
+          && request.resource.data.role in ['employee', 'manager', 'hrAdmin']
+          && request.resource.data.onboardingStatus == 'pendingInvite'
+          && request.resource.data.uid == null
+        ) || (
+          signedIn()
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.role == 'companyOwner'
+          && request.resource.data.onboardingStatus == 'active'
+          && isOwnerOnboarding(tenantId)
+        );
+
+        allow update: if isCompanyAdmin()
+          && companyId() == tenantId
+          && request.resource.data.role != 'superAdmin';
+
+        allow delete: if false;
+      }
+
+      match /attendance/{attendanceId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && (
+            canManageAttendance()
+            || resource.data.employeeId == employeeId()
+          );
+
+        // Attendance mutation is server-authoritative via Cloud Functions.
+        allow create, update, delete: if false;
+      }
+
+      match /settings/attendance {
+        allow read: if activeUser() && companyId() == tenantId;
+        allow write: if false;
+      }
+
+      match /settings/leave {
+        allow read: if activeUser() && companyId() == tenantId;
+        allow write: if false;
+      }
+
+      match /leaveRequests/{requestId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && (
+            canManageAttendance()
+            || resource.data.employeeId == employeeId()
+          );
+
+        // Leave mutations are server-authoritative via Cloud Functions.
+        allow create, update, delete: if false;
+      }
+
+      match /leaveBalances/{balanceId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && (
+            canManageAttendance()
+            || resource.data.employeeId == employeeId()
+          );
+        allow write: if false;
+      }
+
+
+      match /userNotifications/{targetUid}/items/{notificationId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && request.auth.uid == targetUid;
+
+        allow update: if activeUser()
+          && companyId() == tenantId
+          && request.auth.uid == targetUid
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['isRead', 'readAt']);
+
+        allow create, delete: if false;
+      }
+
+      match /claimRequests/{claimId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && (
+            canManageAttendance()
+            || resource.data.employeeId == employeeId()
+          );
+
+        // Claim mutations are server-authoritative via Cloud Functions.
+        allow create, update, delete: if false;
+      }
+
+      match /attendanceQr/{documentId} {
+        allow read, write: if false;
+      }
+
+      match /{document=**} {
+        allow read, write: if false;
+      }
+    }
+  }
+}

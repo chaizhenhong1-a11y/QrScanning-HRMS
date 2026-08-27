@@ -1,0 +1,71 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function profile() {
+      return firestore.get(
+        /databases/(default)/documents/users/$(request.auth.uid)
+      ).data;
+    }
+
+    function activeUser() {
+      return signedIn()
+        && profile().isActive == true;
+    }
+
+    function isApprover() {
+      return activeUser()
+        && profile().role in ['companyOwner', 'hrAdmin', 'manager'];
+    }
+
+    match /companies/{companyId}/leave/{employeeId}/{fileName} {
+      allow create: if activeUser()
+        && profile().companyId == companyId
+        && profile().employeeId == employeeId
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+
+      allow read: if activeUser()
+        && profile().companyId == companyId
+        && (
+          profile().employeeId == employeeId
+          || isApprover()
+        );
+
+      allow delete: if activeUser()
+        && profile().companyId == companyId
+        && profile().employeeId == employeeId;
+
+      allow update: if false;
+    }
+
+
+    match /companies/{companyId}/claims/{employeeId}/{fileName} {
+      allow create: if activeUser()
+        && profile().companyId == companyId
+        && profile().employeeId == employeeId
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+
+      allow read: if activeUser()
+        && profile().companyId == companyId
+        && (
+          profile().employeeId == employeeId
+          || isApprover()
+        );
+
+      allow delete: if activeUser()
+        && profile().companyId == companyId
+        && profile().employeeId == employeeId;
+
+      allow update: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
