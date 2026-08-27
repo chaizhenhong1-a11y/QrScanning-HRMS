@@ -2,6 +2,134 @@
 
 All notable changes to the `qr_scanning` application are documented in this file.
 
+## [3.5.4] - 2026-08-27
+
+### Fixed
+- Added the missing `_dateTime` formatter required by Flexible Work Approval History.
+- Restored successful compilation of the Flexible Work history view.
+
+### Changed
+- Bumped the application version to `3.5.4+56`.
+
+## [3.5.3] - 2026-08-27
+
+### Completed
+- Added Flexible Work Approval History.
+- Added My Requests, Pending, and History views for approval-capable roles.
+- History shows reviewed employee, decision, review note, reviewer, and review timestamp.
+
+### Changed
+- Bumped the application version to `3.5.3+55`.
+
+## [3.5.2] - 2026-08-27
+
+### Fixed
+- Fixed Flexible Work `permission-denied` for ordinary employees by aligning Firestore queries with the existing authorization rules.
+- My Requests now queries only documents where `uid` matches the authenticated Firebase user.
+- Approvals retains the tenant-wide query only for roles that already have approval permission.
+- Removed client-side whole-tenant reads for ordinary employees.
+
+### Security
+- Firestore Rules remain strict and unchanged; authorization was not weakened to fix the issue.
+- Rules are no longer treated as a filter for employee request history.
+- Ordinary employees cannot issue a query capable of returning another employee's flexible work request.
+
+### Changed
+- Bumped the application version to `3.5.2+54`.
+
+## [3.5.1] - 2026-08-27
+
+### Fixed
+- Fixed all `curly_braces_in_flow_control_structures` analyzer findings introduced by the Flexible Work increment.
+- Wrapped Flexible Work validation, dialog, picker, async-result, and error-handling branches in explicit blocks.
+- Restored the zero-issue analyzer baseline without changing Flexible Work behavior.
+
+### Changed
+- Bumped the application version to `3.5.1+53`.
+
+## [3.5.0] - 2026-08-27
+
+### Completed
+- Replaced the legacy local-only Flexible Work Arrangement demo with a tenant-scoped request and approval workflow.
+- Employees can submit Work From Home, Hybrid, and Flexible Hours requests with date range, working hours, location, and reason.
+- Employees can view their request history and withdraw pending requests.
+- Manager, HR Admin, Company Owner, and existing management approvers can review pending requests.
+- Reviewers cannot approve or reject their own flexible work requests.
+- Added approval/rejection notes, reviewer identity, review timestamps, and withdrawn state.
+- Added live Firestore-backed My Requests and Approvals views.
+
+### Security
+- Flexible work requests are isolated under `/companies/{companyId}/flexibleWorkRequests`.
+- Employees can create and withdraw only requests tied to their own authenticated identity.
+- Management roles can review other employees' pending requests but cannot self-approve.
+- Client-side deletion is disabled.
+
+### Changed
+- Removed the hard-coded `Work From Home Today` switch and fake `WFH request submitted` behavior.
+- Bumped the application version to `3.5.0+52`.
+
+## [3.4.1] - 2026-08-27
+
+### Fixed
+- Restored the missing server-authoritative Expense Claims callable backend.
+- Added `submitExpenseClaimV2`, `reviewExpenseClaimV2`, `cancelExpenseClaimV2`, and `markExpenseClaimPaidV2` as an isolated Firebase Functions codebase.
+- Fixed the frontend/backend contract that previously caused `firebase_functions/internal` failures when submitting or managing claims.
+- Claims submission now validates employee status, tenant identity, amount, category, expense date, receipt ownership, and field lengths server-side.
+- Claim approval prevents self-review and supports Manager / HR Admin / Company Owner approval.
+- Claim payment is restricted to Company Owner / HR Admin.
+- Claim review and payment actions now publish employee notifications.
+- Claim review and payment actions write immutable company audit records.
+- Claims repository now targets the restored V2 callable contract so stale legacy deployments cannot intercept new claim actions.
+
+### Architecture
+- Added the `claims` Firebase Functions codebase so Claims can evolve independently without modifying or destabilizing the existing large default Functions entry point.
+
+### Changed
+- Bumped the application version to `3.4.1+51`.
+
+## [3.4.0] - 2026-08-27
+
+### Completed
+- Replaced the legacy hard-coded Meeting Room Booking demo with a real tenant-scoped booking workflow.
+- Company Owner and HR Admin can add, edit, enable, and disable meeting rooms.
+- Meeting rooms now include name, location, capacity, equipment, and active availability status.
+- Employees can book active rooms with a meeting purpose, start time, and end time.
+- Added upcoming booking views, employee self-booking visibility, administrator company-wide booking visibility, and cancellation workflows.
+- Added overlap checks before booking so conflicting room reservations are rejected.
+- Completed the previously unfinished End Time picker.
+- Preserved the existing `MeetingRoomScreen` entry point while moving implementation into a feature-first meeting rooms module.
+
+### Security
+- Meeting rooms and bookings are isolated under each `/companies/{companyId}` tenant.
+- Only Company Owner and HR Admin can manage room inventory.
+- Employees can create bookings only for their own authenticated employee identity.
+- Employees can read and cancel only their own bookings; Company Owner and HR Admin can view and cancel company bookings.
+- Firestore Rules validate room metadata, booking ownership, time ranges, purpose length, and cancellation-only client updates.
+
+### Changed
+- Removed the runtime dependency on the legacy hard-coded `RoomService` room and booking samples.
+- Bumped the application version to `3.4.0+50`.
+
+## [3.3.0] - 2026-08-27
+
+### Completed
+- Replaced the legacy hard-coded Company Policy page with a real tenant-scoped Veyra Company Policy Center.
+- Company Owner and HR Admin can publish, edit, activate, deactivate, and delete company policies.
+- Employees can read active company policies from their own tenant.
+- Added policy categories for Attendance, Leave, Dress Code, Flexible Work, Benefits, Code of Conduct, and General.
+- Added live Firestore updates, category filtering, empty/error states, validation, author metadata, and update timestamps.
+- Preserved the existing `CompanyPolicyScreen` entry point as a compatibility adapter while moving the implementation into a feature-first module.
+
+### Security
+- Company policies are isolated under `/companies/{companyId}/companyPolicies`.
+- Inactive policies are visible only to Company Owner and HR Admin.
+- Policy mutations are restricted to Company Owner and HR Admin.
+- Firestore Rules validate policy fields, lengths, category values, immutable creator metadata, and tenant membership.
+
+### Changed
+- Removed the runtime hard-coded `9am - 6pm`, `Smart casual`, and placeholder Leave Policy content.
+- Bumped the application version to `3.3.0+49`.
+
 ## [3.2.1] - 2026-08-27
 
 ### Fixed

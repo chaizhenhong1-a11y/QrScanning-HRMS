@@ -103,7 +103,7 @@ class ClaimRepository {
     required String description,
     String? receiptPath,
   }) async {
-    final callable = _functions.httpsCallable('submitExpenseClaim');
+    final callable = _functions.httpsCallable('submitExpenseClaimV2');
     await callable.call<void>({
       'title': title.trim(),
       'amount': amount,
@@ -119,7 +119,7 @@ class ClaimRepository {
     required ClaimStatus status,
     String? note,
   }) async {
-    final callable = _functions.httpsCallable('reviewExpenseClaim');
+    final callable = _functions.httpsCallable('reviewExpenseClaimV2');
     await callable.call<void>({
       'claimId': claimId,
       'decision': status.name,
@@ -128,7 +128,7 @@ class ClaimRepository {
   }
 
   Future<void> cancel(String claimId) async {
-    final callable = _functions.httpsCallable('cancelExpenseClaim');
+    final callable = _functions.httpsCallable('cancelExpenseClaimV2');
     await callable.call<void>({'claimId': claimId});
   }
 
@@ -136,7 +136,7 @@ class ClaimRepository {
     required String claimId,
     String? paymentReference,
   }) async {
-    final callable = _functions.httpsCallable('markExpenseClaimPaid');
+    final callable = _functions.httpsCallable('markExpenseClaimPaidV2');
     await callable.call<void>({
       'claimId': claimId,
       'paymentReference': paymentReference?.trim() ?? '',

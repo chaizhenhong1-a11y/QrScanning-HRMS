@@ -280,6 +280,234 @@ service cloud.firestore {
         allow delete: if isCompanyAdmin() && companyId() == tenantId;
       }
 
+      match /companyPolicies/{policyId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && (resource.data.isActive == true || isCompanyAdmin());
+
+        allow create: if isCompanyAdmin()
+          && companyId() == tenantId
+          && request.resource.data.keys().hasOnly([
+            'title',
+            'body',
+            'category',
+            'isActive',
+            'authorUid',
+            'authorName',
+            'createdAt',
+            'updatedAt'
+          ])
+          && request.resource.data.title is string
+          && request.resource.data.title.size() >= 3
+          && request.resource.data.title.size() <= 120
+          && request.resource.data.body is string
+          && request.resource.data.body.size() >= 10
+          && request.resource.data.body.size() <= 10000
+          && request.resource.data.category in [
+            'attendance',
+            'leave',
+            'dressCode',
+            'flexibleWork',
+            'benefits',
+            'conduct',
+            'general'
+          ]
+          && request.resource.data.isActive == true
+          && request.resource.data.authorUid == request.auth.uid
+          && request.resource.data.authorName is string
+          && request.resource.data.authorName.size() <= 120;
+
+        allow update: if isCompanyAdmin()
+          && companyId() == tenantId
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly([
+              'title',
+              'body',
+              'category',
+              'isActive',
+              'updatedAt'
+            ])
+          && request.resource.data.title is string
+          && request.resource.data.title.size() >= 3
+          && request.resource.data.title.size() <= 120
+          && request.resource.data.body is string
+          && request.resource.data.body.size() >= 10
+          && request.resource.data.body.size() <= 10000
+          && request.resource.data.category in [
+            'attendance',
+            'leave',
+            'dressCode',
+            'flexibleWork',
+            'benefits',
+            'conduct',
+            'general'
+          ]
+          && request.resource.data.isActive is bool
+          && request.resource.data.authorUid == resource.data.authorUid
+          && request.resource.data.createdAt == resource.data.createdAt;
+
+        allow delete: if isCompanyAdmin() && companyId() == tenantId;
+      }
+
+      match /meetingRooms/{roomId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && (resource.data.isActive == true || isCompanyAdmin());
+
+        allow create: if isCompanyAdmin()
+          && companyId() == tenantId
+          && request.resource.data.keys().hasOnly([
+            'name',
+            'location',
+            'capacity',
+            'equipment',
+            'isActive',
+            'createdAt',
+            'updatedAt'
+          ])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() >= 2
+          && request.resource.data.name.size() <= 80
+          && request.resource.data.location is string
+          && request.resource.data.location.size() <= 120
+          && request.resource.data.capacity is int
+          && request.resource.data.capacity >= 1
+          && request.resource.data.capacity <= 500
+          && request.resource.data.equipment is list
+          && request.resource.data.equipment.size() <= 20
+          && request.resource.data.isActive == true;
+
+        allow update: if isCompanyAdmin()
+          && companyId() == tenantId
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly([
+              'name',
+              'location',
+              'capacity',
+              'equipment',
+              'isActive',
+              'updatedAt'
+            ])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() >= 2
+          && request.resource.data.name.size() <= 80
+          && request.resource.data.location is string
+          && request.resource.data.location.size() <= 120
+          && request.resource.data.capacity is int
+          && request.resource.data.capacity >= 1
+          && request.resource.data.capacity <= 500
+          && request.resource.data.equipment is list
+          && request.resource.data.equipment.size() <= 20
+          && request.resource.data.isActive is bool;
+
+        allow delete: if false;
+      }
+
+      match /meetingRoomBookings/{bookingId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && (
+            isCompanyAdmin()
+            || resource.data.uid == request.auth.uid
+          );
+
+        allow create: if activeUser()
+          && companyId() == tenantId
+          && request.resource.data.keys().hasOnly([
+            'roomId',
+            'roomName',
+            'employeeId',
+            'uid',
+            'displayName',
+            'purpose',
+            'startAt',
+            'endAt',
+            'status',
+            'createdAt',
+            'cancelledAt'
+          ])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.employeeId == employeeId()
+          && request.resource.data.roomId is string
+          && request.resource.data.roomId.size() > 0
+          && request.resource.data.roomName is string
+          && request.resource.data.roomName.size() > 0
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() <= 120
+          && request.resource.data.purpose is string
+          && request.resource.data.purpose.size() >= 3
+          && request.resource.data.purpose.size() <= 160
+          && request.resource.data.startAt is timestamp
+          && request.resource.data.endAt is timestamp
+          && request.resource.data.endAt > request.resource.data.startAt
+          && request.resource.data.status == 'active'
+          && request.resource.data.cancelledAt == null;
+
+        allow update: if activeUser()
+          && companyId() == tenantId
+          && (
+            isCompanyAdmin()
+            || resource.data.uid == request.auth.uid
+          )
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'cancelledAt'])
+          && resource.data.status == 'active'
+          && request.resource.data.status == 'cancelled';
+
+        allow delete: if false;
+      }
+
+      match /flexibleWorkRequests/{requestId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && (resource.data.uid == request.auth.uid || canManageAttendance());
+
+        allow create: if activeUser()
+          && companyId() == tenantId
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.employeeId == employeeId()
+          && request.resource.data.type in ['workFromHome', 'hybrid', 'flexibleHours']
+          && request.resource.data.startDate is timestamp
+          && request.resource.data.endDate is timestamp
+          && request.resource.data.endDate >= request.resource.data.startDate
+          && request.resource.data.startMinutes is int
+          && request.resource.data.startMinutes >= 0
+          && request.resource.data.startMinutes < 1440
+          && request.resource.data.endMinutes is int
+          && request.resource.data.endMinutes > request.resource.data.startMinutes
+          && request.resource.data.endMinutes <= 1440
+          && request.resource.data.reason is string
+          && request.resource.data.reason.size() >= 5
+          && request.resource.data.reason.size() <= 1000
+          && request.resource.data.status == 'pending'
+          && request.resource.data.reviewedAt == null
+          && request.resource.data.reviewerUid == null
+          && request.resource.data.reviewerName == null
+          && request.resource.data.reviewNote == null
+          && request.resource.data.withdrawnAt == null;
+
+        allow update: if activeUser()
+          && companyId() == tenantId
+          && (
+            (resource.data.uid == request.auth.uid
+              && resource.data.status == 'pending'
+              && request.resource.data.status == 'withdrawn'
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['status', 'withdrawnAt']))
+            ||
+            (canManageAttendance()
+              && resource.data.uid != request.auth.uid
+              && resource.data.employeeId != employeeId()
+              && resource.data.status == 'pending'
+              && request.resource.data.status in ['approved', 'rejected']
+              && request.resource.data.reviewerUid == request.auth.uid
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['status', 'reviewedAt', 'reviewerUid', 'reviewerName', 'reviewNote']))
+          );
+
+        allow delete: if false;
+      }
+
       match /holidays/{holidayId} {
         allow read: if activeUser() && companyId() == tenantId;
         allow write: if false;
