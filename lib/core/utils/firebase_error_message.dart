@@ -41,12 +41,30 @@ String firebaseErrorMessage(Object error) {
 
   if (error is FirebaseAuthException) {
     switch (error.code) {
+      case 'invalid-email':
+        return 'Enter a valid email address.';
+      case 'user-disabled':
+        return 'This account has been disabled. Contact your HR administrator.';
+      case 'too-many-requests':
+        return 'Too many attempts. Please wait a moment and try again.';
       case 'network-request-failed':
         return 'Network connection failed. Please check your connection.';
+      case 'operation-not-allowed':
+        return 'This sign-in method is currently unavailable.';
+      case 'invalid-credential':
+      case 'wrong-password':
+        return 'The email or password is incorrect.';
+      case 'email-already-in-use':
+        return 'An account already exists for this email address.';
+      case 'weak-password':
+        return 'Choose a stronger password and try again.';
       case 'requires-recent-login':
         return 'Please sign in again before performing this sensitive action.';
       default:
-        return error.message ?? 'Authentication failed.';
+        final message = error.message?.trim();
+        return message?.isNotEmpty == true
+            ? message!
+            : 'Authentication failed. Please try again.';
     }
   }
 

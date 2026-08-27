@@ -8,11 +8,12 @@ import '../domain/tenant_identity.dart';
 
 class IdentityService {
   IdentityService({IdentityRepository? repository})
-    : _repository = repository ?? IdentityRepository();
+    : _repository = repository ?? const IdentityRepository();
 
   final IdentityRepository _repository;
 
   FirebaseAuth get _auth => FirebaseServices.auth;
+
   Future<TenantIdentity?> restoreIdentity() async {
     final firebaseUser = _auth.currentUser;
     if (firebaseUser == null) {
@@ -98,6 +99,44 @@ class IdentityService {
     }
   }
 
+  Future<TenantIdentity> updateMyDisplayName(String displayName) async {
+    final normalizedName = displayName.trim();
+    if (normalizedName.length < 2) {
+      throw ArgumentError('Display name must contain at least 2 characters.');
+    }
+    if (normalizedName.length > 80) {
+      throw ArgumentError('Display name cannot exceed 80 characters.');
+    }
+
+    final firebaseUser = _auth.currentUser;
+    if (firebaseUser == null) {
+      throw const IdentitySessionMissingException();
+    }
+
+    final identity = await _repository.findByUid(firebaseUser.uid);
+    if (identity == null || !identity.isActive) {
+      throw const IdentitySessionMissingException();
+    }
+
+    if (normalizedName == identity.displayName) {
+      return identity;
+    }
+
+    final updated = await _repository.updateDisplayName(
+      identity: identity,
+      displayName: normalizedName,
+    );
+
+    try {
+      await firebaseUser.updateDisplayName(normalizedName);
+    } on FirebaseAuthException {
+      // Firestore is the authoritative HRMS profile.
+    }
+
+    await _hydrateLegacySession(updated);
+    return updated;
+  }
+
   Future<void> signOut() async {
     await _auth.signOut();
     await SessionStore.clearSession();
@@ -133,4 +172,12 @@ class IdentityDisabledException implements Exception {
 
   @override
   String toString() => 'This HRMS account is inactive.';
+}
+
+class IdentitySessionMissingException implements Exception {
+  const IdentitySessionMissingException();
+
+  @override
+  String toString() =>
+      'Your HRMS session is unavailable. Please sign in again.';
 }

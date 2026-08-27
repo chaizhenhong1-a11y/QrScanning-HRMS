@@ -111,4 +111,37 @@ class IdentityRepository {
       isActive: true,
     );
   }
+
+  Future<TenantIdentity> updateDisplayName({
+    required TenantIdentity identity,
+    required String displayName,
+  }) async {
+    final normalizedName = displayName.trim();
+    final now = FieldValue.serverTimestamp();
+    final userRef = _db.collection('users').doc(identity.uid);
+    final employeeRef = _db
+        .collection('companies')
+        .doc(identity.companyId)
+        .collection('employees')
+        .doc(identity.employeeId);
+
+    final batch = _db.batch();
+    batch.update(userRef, {'displayName': normalizedName, 'updatedAt': now});
+    batch.update(employeeRef, {
+      'displayName': normalizedName,
+      'updatedAt': now,
+    });
+    await batch.commit();
+
+    return TenantIdentity(
+      uid: identity.uid,
+      companyId: identity.companyId,
+      employeeId: identity.employeeId,
+      email: identity.email,
+      displayName: normalizedName,
+      department: identity.department,
+      role: identity.role,
+      isActive: identity.isActive,
+    );
+  }
 }

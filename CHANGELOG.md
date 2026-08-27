@@ -2,6 +2,53 @@
 
 All notable changes to the `qr_scanning` application are documented in this file.
 
+## [3.1.6] - 2026-08-27
+
+### Fixed
+- Replaced the broken Profile `'/history'` named-route navigation with the real Attendance History screen.
+- Replaced the broken Profile `'/settings'` named-route navigation with a real Veyra Account Settings screen.
+- Removed two runtime navigation paths that referenced routes not registered by the current application router.
+
+### Completed
+- Completed the existing Settings entry with authenticated account details, role visibility, tenant/employee identifiers, and password-reset email access.
+- Password-reset requests from Settings reuse Firebase Authentication and the configured custom SMTP delivery path.
+- Added loading, success, throttling, and backend error states for account-settings password reset.
+
+### Changed
+- Bumped the application version to `3.1.6+44`.
+
+## [3.1.5] - 2026-08-27
+
+### Fixed
+- Replaced the legacy local-only Edit Profile save path with the authenticated multi-tenant Firebase identity flow.
+- Profile now reloads the signed-in tenant identity from Firestore instead of trusting the temporary in-memory `UserService` cache.
+- Department is now read-only in self-service Profile editing because organizational assignment is HR-managed data.
+- Employee Profile updates synchronize `displayName` across the tenant user profile and employee directory record.
+- Added a tightly-scoped Firestore self-update rule allowing employees to update only their own `displayName` and `updatedAt` fields.
+- Corrected Profile feature visibility so employee self-service modules are no longer hidden behind the legacy `boss` compatibility role.
+- Restricted Audit Log and Work Time Settings visibility to Company Owner / HR Admin while keeping Reports available to management roles.
+- Updated the About dialog branding from the legacy Company Attendance name to Veyra HRMS.
+
+### Hardened
+- Added profile-name validation, duplicate-save protection, backend error feedback, and safe refresh failure handling.
+- Firebase Auth display name is refreshed after the authoritative HRMS profile update so authentication metadata remains aligned.
+
+### Changed
+- Bumped the application version to `3.1.5+43`.
+
+## [3.1.4] - 2026-08-27
+
+### Hardened
+- Completed the existing Forgot Password workflow with form validation, normalized work-email input, resend support, and a 30-second resend cooldown.
+- Added a safe change-email path after a reset request without requiring navigation back to Sign In.
+- Password-reset success messaging no longer reveals whether an employee account exists for the entered email.
+- Reused the shared Firebase error mapper for password-reset failures instead of maintaining screen-specific Firebase error strings.
+- Expanded shared Firebase Auth error mapping for invalid email, disabled account, throttling, unavailable auth method, invalid credentials, duplicate email, and weak-password failures.
+- Added unexpected-error handling so password-reset failures cannot leave the action permanently loading.
+
+### Changed
+- Bumped the application version to `3.1.4+42`.
+
 ## [3.1.3] - 2026-08-27
 
 ### Fixed

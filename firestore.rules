@@ -131,9 +131,18 @@ service cloud.firestore {
           && isOwnerOnboarding(tenantId)
         );
 
-        allow update: if isCompanyAdmin()
+        allow update: if (
+          isCompanyAdmin()
           && companyId() == tenantId
-          && request.resource.data.role != 'superAdmin';
+          && request.resource.data.role != 'superAdmin'
+        ) || (
+          activeUser()
+          && companyId() == tenantId
+          && targetEmployeeId == employeeId()
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['displayName', 'updatedAt'])
+        );
 
         allow delete: if false;
       }
@@ -146,7 +155,6 @@ service cloud.firestore {
             || resource.data.employeeId == employeeId()
           );
 
-        // Attendance mutation is server-authoritative via Cloud Functions.
         allow create, update, delete: if false;
       }
 
@@ -168,7 +176,6 @@ service cloud.firestore {
             || resource.data.employeeId == employeeId()
           );
 
-        // Leave mutations are server-authoritative via Cloud Functions.
         allow create, update, delete: if false;
       }
 
@@ -181,7 +188,6 @@ service cloud.firestore {
           );
         allow write: if false;
       }
-
 
       match /userNotifications/{targetUid}/items/{notificationId} {
         allow read: if activeUser()
@@ -205,34 +211,22 @@ service cloud.firestore {
             || resource.data.employeeId == employeeId()
           );
 
-        // Claim mutations are server-authoritative via Cloud Functions.
         allow create, update, delete: if false;
       }
 
-
-
-
-
-
-
       match /auditLogs/{auditId} {
-        // Immutable company audit history is exposed only through Cloud Functions.
         allow read, create, update, delete: if false;
       }
 
       match /assets/{assetId} {
-        // Asset inventory and assignment are scoped through Cloud Functions.
         allow read, create, update, delete: if false;
       }
 
       match /employeeLifecycle/{caseId} {
-        // Lifecycle data is exposed only through scoped Cloud Functions.
         allow read, create, update, delete: if false;
       }
 
       match /performanceReviews/{reviewId} {
-        // Performance review data is read and mutated through Cloud Functions
-        // so manager/employee scoping remains server-authoritative.
         allow read, create, update, delete: if false;
       }
 
@@ -244,7 +238,6 @@ service cloud.firestore {
             || resource.data.employeeId == employeeId()
           );
 
-        // Metadata mutations are validated by Cloud Functions.
         allow create, update, delete: if false;
       }
 
