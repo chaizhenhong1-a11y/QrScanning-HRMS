@@ -2,6 +2,27 @@
 
 All notable changes to the `qr_scanning` application are documented in this file.
 
+## [3.6.0] - 2026-08-27
+
+### Completed
+- Replaced the local-only Training Feedback demo with a real tenant-scoped Firestore workflow.
+- Employees can submit feedback with training title, training date, 1-5 rating, and optional comments.
+- Employees can view their own immutable feedback history.
+- Manager, HR Admin, Company Owner, and existing management approvers can review company-wide training feedback.
+- Added live updates, loading/error/empty states, validation, submit progress, and submitted timestamps.
+- Preserved the existing `TrainingFeedbackScreen` entry point while moving implementation into a feature-first module.
+
+### Security
+- Training feedback is isolated under `/companies/{companyId}/trainingFeedback`.
+- Employees can create feedback only for their own authenticated employee identity.
+- Employees can read only their own feedback.
+- Management approvers can read company feedback.
+- Client-side update and delete operations are disabled so submitted feedback remains immutable.
+
+### Changed
+- Removed the fake `Feedback submitted` local-only behavior.
+- Bumped the application version to `3.6.0+57`.
+
 ## [3.5.4] - 2026-08-27
 
 ### Fixed

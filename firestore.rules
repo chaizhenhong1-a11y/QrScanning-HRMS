@@ -508,6 +508,43 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      match /trainingFeedback/{feedbackId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && (
+            resource.data.uid == request.auth.uid
+            || canManageAttendance()
+          );
+
+        allow create: if activeUser()
+          && companyId() == tenantId
+          && request.resource.data.keys().hasOnly([
+            'uid',
+            'employeeId',
+            'employeeName',
+            'trainingTitle',
+            'trainingDate',
+            'rating',
+            'comment',
+            'submittedAt'
+          ])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.employeeId == employeeId()
+          && request.resource.data.employeeName is string
+          && request.resource.data.employeeName.size() <= 120
+          && request.resource.data.trainingTitle is string
+          && request.resource.data.trainingTitle.size() >= 3
+          && request.resource.data.trainingTitle.size() <= 120
+          && request.resource.data.trainingDate is timestamp
+          && request.resource.data.rating is int
+          && request.resource.data.rating >= 1
+          && request.resource.data.rating <= 5
+          && request.resource.data.comment is string
+          && request.resource.data.comment.size() <= 2000;
+
+        allow update, delete: if false;
+      }
+
       match /holidays/{holidayId} {
         allow read: if activeUser() && companyId() == tenantId;
         allow write: if false;
