@@ -81,6 +81,51 @@ async function notificationRecipientsForRoles(companyId, roles) {
 }
 
 
+
+async function writeAuditLog({
+  companyId,
+  actor,
+  module,
+  action,
+  targetType = "",
+  targetId = "",
+  summary = "",
+  result = "success",
+  metadata = null,
+}) {
+  if (!companyId || !actor?.uid) return;
+
+  await db
+    .collection("companies")
+    .doc(companyId)
+    .collection("auditLogs")
+    .add({
+      companyId,
+      actorUid: actor.uid,
+      actorEmployeeId: actor.employeeId || "",
+      actorName: actor.displayName || actor.employeeId || "User",
+      actorRole: actor.role || "",
+      module,
+      action,
+      targetType,
+      targetId,
+      summary,
+      result,
+      metadata,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+}
+
+function auditActor(request, caller) {
+  return {
+    uid: request.auth?.uid || "",
+    employeeId: caller?.employeeId || "",
+    displayName: caller?.displayName || "",
+    role: caller?.role || "",
+  };
+}
+
+
 exports.issueEmployeeInvitation = onCall(
   {
     enforceAppCheck: false,
@@ -409,6 +454,15 @@ exports.updateAttendanceSettings = onCall(
         {merge: true},
       );
 
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "attendance",
+      action: "updateAttendanceSettings",
+      targetType: "attendanceSettings",
+      targetId: "attendance",
+      summary: "Updated attendance settings.",
+    });
     return {updated: true};
   },
 );
@@ -1373,6 +1427,15 @@ exports.reviewLeaveRequest = onCall(
       });
     });
 
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "leave",
+      action: decision === "approved" ? "approveLeave" : "rejectLeave",
+      targetType: "leaveRequest",
+      targetId: requestId,
+      summary: `${decision} leave request ${requestId}.`,
+    });
     return {status: decision};
   },
 );
@@ -1685,6 +1748,1770 @@ exports.finalizePayroll = onCall(
       updatedAt: FieldValue.serverTimestamp(),
     });
     await batch.commit();
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "payroll",
+      action: "finalizePayroll",
+      targetType: "payrollRun",
+      targetId: month,
+      summary: `Finalized payroll for ${month}.`,
+    });
     return {month, status: "finalized"};
+  },
+);
+
+
+const REPORT_ROLES = new Set([
+  "companyOwner",
+  "hrAdmin",
+  "manager",
+]);
+
+exports.getMonthlyHrReport = onCall(
+  {enforceAppCheck: false, timeoutSeconds: 60},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!REPORT_ROLES.has(caller.role)) {
+      throw new HttpsError(
+        "permission-denied",
+        "You do not have permission to view HR reports.",
+      );
+    }
+
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const month = asNonEmptyString(request.data?.month, "month");
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Report month must use YYYY-MM.",
+      );
+    }
+
+    const monthNumber = Number(month.slice(5));
+    if (monthNumber < 1 || monthNumber > 12) {
+      throw new HttpsError("invalid-argument", "Report month is invalid.");
+    }
+
+    const [year, numericMonth] = month.split("-").map(Number);
+    const start = new Date(Date.UTC(year, numericMonth - 1, 1));
+    const end = new Date(Date.UTC(year, numericMonth, 0));
+    const startKey = start.toISOString().slice(0, 10);
+    const endKey = end.toISOString().slice(0, 10);
+    const companyRef = db.collection("companies").doc(companyId);
+
+    const [
+      employeesSnapshot,
+      attendanceSnapshot,
+      leaveSnapshot,
+      claimsSnapshot,
+      payrollRunSnapshot,
+    ] = await Promise.all([
+      companyRef
+        .collection("employees")
+        .where("employmentStatus", "==", "active")
+        .get(),
+      companyRef
+        .collection("attendance")
+        .where("dateKey", ">=", startKey)
+        .where("dateKey", "<=", endKey)
+        .get(),
+      companyRef.collection("leaveRequests").get(),
+      companyRef.collection("claimRequests").get(),
+      companyRef.collection("payrollRuns").doc(month).get(),
+    ]);
+
+    const attendance = attendanceSnapshot.docs.map((doc) => doc.data());
+    const presentEmployees = new Set(
+      attendance.map((item) => item.employeeId).filter(Boolean),
+    ).size;
+    const lateRecords = attendance.filter(
+      (item) => item.clockInStatus === "late" || item.isLate === true,
+    ).length;
+    const earlyLeaveRecords = attendance.filter(
+      (item) => item.clockOutStatus === "early" || item.leftEarly === true,
+    ).length;
+    const completedAttendanceRecords = attendance.filter(
+      (item) => item.clockInAt && item.clockOutAt,
+    ).length;
+
+    const leaves = leaveSnapshot.docs.map((doc) => doc.data());
+    const monthLeaves = leaves.filter((item) =>
+      String(item.startDateKey || "") <= endKey &&
+      String(item.endDateKey || "") >= startKey
+    );
+    const approvedLeaves = monthLeaves.filter(
+      (item) => item.status === "approved",
+    );
+    const pendingLeaveRequests = monthLeaves.filter(
+      (item) => item.status === "pending",
+    ).length;
+
+    let approvedLeaveDays = 0;
+    for (const leave of approvedLeaves) {
+      if (leave.startDateKey >= startKey && leave.endDateKey <= endKey) {
+        approvedLeaveDays += Number(leave.daysRequested || 0);
+        continue;
+      }
+
+      let cursor = new Date(
+        `${leave.startDateKey > startKey ? leave.startDateKey : startKey}T00:00:00Z`,
+      );
+      const leaveEnd = new Date(
+        `${leave.endDateKey < endKey ? leave.endDateKey : endKey}T00:00:00Z`,
+      );
+      let overlapDays = 0;
+      while (cursor <= leaveEnd) {
+        const weekday = cursor.getUTCDay();
+        if (weekday !== 0 && weekday !== 6) overlapDays += 1;
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+      }
+      if (
+        leave.duration === "halfDayMorning" ||
+        leave.duration === "halfDayAfternoon"
+      ) {
+        overlapDays = 0.5;
+      }
+      approvedLeaveDays += overlapDays;
+    }
+
+    const claims = claimsSnapshot.docs
+      .map((doc) => doc.data())
+      .filter((item) =>
+        String(item.expenseDateKey || "") >= startKey &&
+        String(item.expenseDateKey || "") <= endKey
+      );
+    const pendingClaimCount = claims.filter(
+      (item) => item.status === "pending",
+    ).length;
+    const approvedClaimCount = claims.filter(
+      (item) => item.status === "approved",
+    ).length;
+    const paidClaimCount = claims.filter(
+      (item) => item.status === "paid",
+    ).length;
+    const claimAmount = claims.reduce(
+      (sum, item) => sum + Number(item.amount || 0),
+      0,
+    );
+
+    const payrollVisible =
+      caller.role === "companyOwner" ||
+      caller.role === "hrAdmin";
+    const payroll = payrollRunSnapshot.data() || {};
+
+    return {
+      month,
+      activeEmployees: employeesSnapshot.size,
+      attendanceRecords: attendance.length,
+      presentEmployees,
+      lateRecords,
+      earlyLeaveRecords,
+      completedAttendanceRecords,
+      approvedLeaveRequests: approvedLeaves.length,
+      approvedLeaveDays: Math.round(approvedLeaveDays * 10) / 10,
+      pendingLeaveRequests,
+      claimCount: claims.length,
+      pendingClaimCount,
+      approvedClaimCount,
+      paidClaimCount,
+      claimAmount: Math.round(claimAmount * 100) / 100,
+      payrollVisible,
+      payrollStatus: payrollVisible ? (payroll.status || null) : null,
+      payrollEmployeeCount: payrollVisible ?
+        Number(payroll.employeeCount || 0) :
+        0,
+      totalNetPay: payrollVisible ?
+        Number(payroll.totalNetPay || 0) :
+        0,
+    };
+  },
+);
+
+
+const WORKFORCE_APPROVER_ROLES = new Set([
+  "companyOwner",
+  "hrAdmin",
+  "manager",
+]);
+const WORKFORCE_ADMIN_ROLES = new Set(["companyOwner", "hrAdmin"]);
+
+function workforceDateKey(value, fieldName = "dateKey") {
+  const raw = asNonEmptyString(value, fieldName);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    throw new HttpsError("invalid-argument", `${fieldName} must use YYYY-MM-DD.`);
+  }
+  const date = new Date(`${raw}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) {
+    throw new HttpsError("invalid-argument", `${fieldName} is invalid.`);
+  }
+  return raw;
+}
+
+exports.getWorkforceTimeOverview = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const month = asNonEmptyString(request.data?.month, "month");
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      throw new HttpsError("invalid-argument", "Month must use YYYY-MM.");
+    }
+
+    const startKey = `${month}-01`;
+    const [year, monthNumber] = month.split("-").map(Number);
+    const endKey = new Date(Date.UTC(year, monthNumber, 0))
+      .toISOString()
+      .slice(0, 10);
+    const companyRef = db.collection("companies").doc(companyId);
+
+    const [holidaysSnap, shiftsSnap, overtimeSnap] = await Promise.all([
+      companyRef
+        .collection("holidays")
+        .where("dateKey", ">=", startKey)
+        .where("dateKey", "<=", endKey)
+        .get(),
+      companyRef
+        .collection("employeeShifts")
+        .where("dateKey", ">=", startKey)
+        .where("dateKey", "<=", endKey)
+        .get(),
+      companyRef
+        .collection("overtimeRequests")
+        .where("dateKey", ">=", startKey)
+        .where("dateKey", "<=", endKey)
+        .get(),
+    ]);
+
+    const management = WORKFORCE_APPROVER_ROLES.has(caller.role);
+    const employeeId = caller.employeeId;
+
+    return {
+      month,
+      holidays: holidaysSnap.docs.map((doc) => ({id: doc.id, ...doc.data()})),
+      shifts: shiftsSnap.docs
+        .map((doc) => ({id: doc.id, ...doc.data()}))
+        .filter((item) => management || item.employeeId === employeeId),
+      overtime: overtimeSnap.docs
+        .map((doc) => ({id: doc.id, ...doc.data()}))
+        .filter((item) => management || item.employeeId === employeeId),
+    };
+  },
+);
+
+exports.upsertCompanyHoliday = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!WORKFORCE_ADMIN_ROLES.has(caller.role)) {
+      throw new HttpsError(
+        "permission-denied",
+        "Only Company Owner or HR can manage holidays.",
+      );
+    }
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const dateKey = workforceDateKey(request.data?.dateKey);
+    const name = asNonEmptyString(request.data?.name, "name").slice(0, 120);
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("holidays")
+      .doc(dateKey);
+
+    await ref.set({
+      companyId,
+      dateKey,
+      name,
+      isPaid: request.data?.isPaid !== false,
+      updatedBy: request.auth.uid,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    return {id: dateKey};
+  },
+);
+
+exports.assignEmployeeShift = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!WORKFORCE_APPROVER_ROLES.has(caller.role)) {
+      throw new HttpsError("permission-denied", "You cannot assign shifts.");
+    }
+
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const employeeId = asNonEmptyString(request.data?.employeeId, "employeeId");
+    const dateKey = workforceDateKey(request.data?.dateKey);
+    const shiftName = asNonEmptyString(request.data?.shiftName, "shiftName")
+      .slice(0, 80);
+    const startMinutes = Number(request.data?.startMinutes);
+    const endMinutes = Number(request.data?.endMinutes);
+
+    if (
+      !Number.isInteger(startMinutes) ||
+      !Number.isInteger(endMinutes) ||
+      startMinutes < 0 ||
+      startMinutes > 1439 ||
+      endMinutes < 0 ||
+      endMinutes > 1439
+    ) {
+      throw new HttpsError("invalid-argument", "Shift times are invalid.");
+    }
+
+    const employeeRef = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("employees")
+      .doc(employeeId);
+    const employee = (await employeeRef.get()).data();
+    if (!employee) {
+      throw new HttpsError("not-found", "Employee was not found.");
+    }
+
+    const id = `${dateKey}_${employeeId}`;
+    await db
+      .collection("companies")
+      .doc(companyId)
+      .collection("employeeShifts")
+      .doc(id)
+      .set({
+        companyId,
+        employeeId,
+        employeeName: employee.displayName || employee.name || employeeId,
+        dateKey,
+        shiftName,
+        startMinutes,
+        endMinutes,
+        assignedBy: request.auth.uid,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+
+    return {id};
+  },
+);
+
+exports.submitOvertimeRequest = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const employeeId = asNonEmptyString(caller.employeeId, "employeeId");
+    const dateKey = workforceDateKey(request.data?.dateKey);
+    const minutes = Number(request.data?.minutes);
+    const reason = asNonEmptyString(request.data?.reason, "reason").slice(0, 1000);
+
+    if (!Number.isInteger(minutes) || minutes < 30 || minutes > 720) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Overtime must be between 30 minutes and 12 hours.",
+      );
+    }
+
+    const employee = (
+      await db
+        .collection("companies")
+        .doc(companyId)
+        .collection("employees")
+        .doc(employeeId)
+        .get()
+    ).data();
+
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("overtimeRequests")
+      .doc();
+
+    await ref.set({
+      companyId,
+      employeeId,
+      employeeName: employee?.displayName || caller.displayName || employeeId,
+      dateKey,
+      minutes,
+      reason,
+      status: "pending",
+      submittedBy: request.auth.uid,
+      createdAt: FieldValue.serverTimestamp(),
+      reviewedAt: null,
+      reviewerId: null,
+      reviewNote: null,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    return {id: ref.id, status: "pending"};
+  },
+);
+
+exports.reviewOvertimeRequest = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!WORKFORCE_APPROVER_ROLES.has(caller.role)) {
+      throw new HttpsError("permission-denied", "You cannot review overtime.");
+    }
+
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const requestId = asNonEmptyString(request.data?.requestId, "requestId");
+    const decision = asNonEmptyString(request.data?.decision, "decision");
+    const note = typeof request.data?.note === "string" ?
+      request.data.note.trim().slice(0, 1000) :
+      "";
+
+    if (!["approved", "rejected"].includes(decision)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Decision must be approved or rejected.",
+      );
+    }
+
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("overtimeRequests")
+      .doc(requestId);
+
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const overtime = snapshot.data();
+      if (!overtime) {
+        throw new HttpsError("not-found", "Overtime request was not found.");
+      }
+      if (overtime.status !== "pending") {
+        throw new HttpsError(
+          "failed-precondition",
+          "This overtime request has already been reviewed.",
+        );
+      }
+      if (overtime.submittedBy === request.auth.uid) {
+        throw new HttpsError(
+          "permission-denied",
+          "You cannot review your own overtime request.",
+        );
+      }
+
+      transaction.update(ref, {
+        status: decision,
+        reviewerId: request.auth.uid,
+        reviewerName: caller.displayName || caller.employeeId || "Reviewer",
+        reviewNote: note || null,
+        reviewedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "workforce",
+      action: "reviewOvertimeRequest",
+      targetType: "overtimeRequest",
+      targetId: requestId,
+      summary: `Reviewed overtime request ${requestId}: ${decision}.`,
+    });
+    return {status: decision};
+  },
+);
+
+
+const EMPLOYEE_DOCUMENT_CATEGORIES = new Set([
+  "IC / Passport",
+  "Offer Letter",
+  "Contract",
+  "Certificate",
+  "Medical",
+  "Other",
+]);
+
+exports.registerEmployeeDocument = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const employeeId = asNonEmptyString(request.data?.employeeId, "employeeId");
+    const category = asNonEmptyString(request.data?.category, "category");
+    const fileName = asNonEmptyString(request.data?.fileName, "fileName").slice(0, 240);
+    const storagePath = asNonEmptyString(request.data?.storagePath, "storagePath");
+    const contentType = asNonEmptyString(request.data?.contentType, "contentType");
+    const sizeBytes = Number(request.data?.sizeBytes);
+    const expiryDateKey =
+      typeof request.data?.expiryDateKey === "string" &&
+      request.data.expiryDateKey.trim().length > 0 ?
+        request.data.expiryDateKey.trim() :
+        null;
+    const notes =
+      typeof request.data?.notes === "string" ?
+        request.data.notes.trim().slice(0, 1000) :
+        null;
+
+    const management = ["companyOwner", "hrAdmin"].includes(caller.role);
+    if (!management && employeeId !== caller.employeeId) {
+      throw new HttpsError(
+        "permission-denied",
+        "You cannot register a document for another employee.",
+      );
+    }
+    if (!EMPLOYEE_DOCUMENT_CATEGORIES.has(category)) {
+      throw new HttpsError("invalid-argument", "Document category is invalid.");
+    }
+    if (!Number.isFinite(sizeBytes) || sizeBytes <= 0 || sizeBytes > 15 * 1024 * 1024) {
+      throw new HttpsError("invalid-argument", "Document size is invalid.");
+    }
+    if (!["application/pdf", "image/jpeg", "image/png"].includes(contentType)) {
+      throw new HttpsError("invalid-argument", "Unsupported document type.");
+    }
+    if (
+      !storagePath.startsWith(
+        `companies/${companyId}/employee_documents/${employeeId}/`,
+      )
+    ) {
+      throw new HttpsError(
+        "permission-denied",
+        "Document path does not belong to this employee.",
+      );
+    }
+    if (expiryDateKey && !/^\d{4}-\d{2}-\d{2}$/.test(expiryDateKey)) {
+      throw new HttpsError("invalid-argument", "Expiry date is invalid.");
+    }
+
+    const employeeRef = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("employees")
+      .doc(employeeId);
+    const employee = (await employeeRef.get()).data();
+    if (!employee) {
+      throw new HttpsError("not-found", "Employee was not found.");
+    }
+
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("employeeDocuments")
+      .doc();
+
+    await ref.set({
+      companyId,
+      employeeId,
+      employeeName: employee.displayName || employee.name || employeeId,
+      category,
+      fileName,
+      storagePath,
+      contentType,
+      sizeBytes,
+      expiryDateKey,
+      notes: notes || null,
+      uploadedBy: request.auth.uid,
+      uploadedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    if (expiryDateKey) {
+      const identity = await db
+        .collection("identities")
+        .where("companyId", "==", companyId)
+        .where("employeeId", "==", employeeId)
+        .limit(1)
+        .get();
+      if (!identity.empty) {
+        await createUserNotification({
+          companyId,
+          uid: identity.docs[0].id,
+          type: "general",
+          title: "Document expiry recorded",
+          body: `${fileName} expires on ${expiryDateKey}.`,
+          targetType: "employeeDocument",
+          targetId: ref.id,
+        });
+      }
+    }
+
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "documents",
+      action: "registerEmployeeDocument",
+      targetType: "employeeDocument",
+      targetId: ref.id,
+      summary: `Registered employee document for ${employeeId}.`,
+    });
+    return {documentId: ref.id};
+  },
+);
+
+exports.deleteEmployeeDocument = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const documentId = asNonEmptyString(request.data?.documentId, "documentId");
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("employeeDocuments")
+      .doc(documentId);
+    const snapshot = await ref.get();
+    const document = snapshot.data();
+    if (!document) {
+      throw new HttpsError("not-found", "Document was not found.");
+    }
+
+    const management = ["companyOwner", "hrAdmin"].includes(caller.role);
+    if (!management && document.employeeId !== caller.employeeId) {
+      throw new HttpsError("permission-denied", "You cannot delete this document.");
+    }
+
+    await ref.delete();
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "documents",
+      action: "deleteEmployeeDocument",
+      targetType: "employeeDocument",
+      targetId: documentId,
+      summary: `Deleted employee document ${documentId}.`,
+    });
+    return {deleted: true};
+  },
+);
+
+
+const PERFORMANCE_REVIEWER_ROLES = new Set([
+  "companyOwner",
+  "hrAdmin",
+  "manager",
+]);
+
+function performancePeriod(value) {
+  const period = asNonEmptyString(value, "period");
+  if (!/^\d{4}$/.test(period)) {
+    throw new HttpsError("invalid-argument", "Performance period must be a year.");
+  }
+  return period;
+}
+
+function performanceRating(value, fieldName = "rating") {
+  const rating = Number(value);
+  if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+    throw new HttpsError(
+      "invalid-argument",
+      `${fieldName} must be between 1 and 5.`,
+    );
+  }
+  return Math.round(rating * 10) / 10;
+}
+
+async function performanceIdentityUid(companyId, employeeId) {
+  const snapshot = await db
+    .collection("identities")
+    .where("companyId", "==", companyId)
+    .where("employeeId", "==", employeeId)
+    .limit(1)
+    .get();
+  return snapshot.empty ? null : snapshot.docs[0].id;
+}
+
+exports.getPerformanceOverview = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const employeeId = asNonEmptyString(caller.employeeId, "employeeId");
+    const period = performancePeriod(request.data?.period);
+    const canManage = PERFORMANCE_REVIEWER_ROLES.has(caller.role);
+
+    let query = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("performanceReviews")
+      .where("period", "==", period);
+
+    if (!canManage) {
+      query = query.where("employeeId", "==", employeeId);
+    }
+
+    const snapshot = await query.get();
+    const reviews = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    return {
+      period,
+      canManage,
+      currentEmployeeId: employeeId,
+      reviews,
+    };
+  },
+);
+
+exports.ensurePerformanceReview = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const callerEmployeeId = asNonEmptyString(caller.employeeId, "employeeId");
+    const period = performancePeriod(request.data?.period);
+    const requestedEmployeeId =
+      typeof request.data?.employeeId === "string" &&
+      request.data.employeeId.trim().length > 0 ?
+        request.data.employeeId.trim() :
+        callerEmployeeId;
+
+    if (
+      requestedEmployeeId !== callerEmployeeId &&
+      !PERFORMANCE_REVIEWER_ROLES.has(caller.role)
+    ) {
+      throw new HttpsError(
+        "permission-denied",
+        "You cannot start a review for another employee.",
+      );
+    }
+
+    const employeeRef = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("employees")
+      .doc(requestedEmployeeId);
+    const employee = (await employeeRef.get()).data();
+    if (!employee) {
+      throw new HttpsError("not-found", "Employee was not found.");
+    }
+
+    const id = `${period}_${requestedEmployeeId}`;
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("performanceReviews")
+      .doc(id);
+
+    const existing = await ref.get();
+    if (!existing.exists) {
+      await ref.set({
+        companyId,
+        period,
+        employeeId: requestedEmployeeId,
+        employeeName:
+          employee.displayName || employee.name || requestedEmployeeId,
+        department: employee.department || "",
+        status: "goalSetting",
+        goals: [],
+        selfRating: null,
+        selfComment: null,
+        managerRating: null,
+        managerComment: null,
+        createdBy: request.auth.uid,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    return {reviewId: id};
+  },
+);
+
+exports.upsertPerformanceGoal = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const reviewId = asNonEmptyString(request.data?.reviewId, "reviewId");
+    const title = asNonEmptyString(request.data?.title, "title").slice(0, 160);
+    const description =
+      typeof request.data?.description === "string" ?
+        request.data.description.trim().slice(0, 1500) :
+        "";
+    const weight = Number(request.data?.weight);
+    const progress = Number(request.data?.progress);
+    const goalId =
+      typeof request.data?.goalId === "string" &&
+      request.data.goalId.trim().length > 0 ?
+        request.data.goalId.trim() :
+        crypto.randomUUID();
+
+    if (!Number.isFinite(weight) || weight <= 0 || weight > 100) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Goal weight must be between 0 and 100.",
+      );
+    }
+    if (!Number.isFinite(progress) || progress < 0 || progress > 100) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Goal progress must be between 0 and 100.",
+      );
+    }
+
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("performanceReviews")
+      .doc(reviewId);
+
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const review = snapshot.data();
+      if (!review) {
+        throw new HttpsError("not-found", "Performance review was not found.");
+      }
+
+      const isOwner = review.employeeId === caller.employeeId;
+      const canManage = PERFORMANCE_REVIEWER_ROLES.has(caller.role);
+      if (!isOwner && !canManage) {
+        throw new HttpsError(
+          "permission-denied",
+          "You cannot edit this performance review.",
+        );
+      }
+      if (!["goalSetting", "selfReview"].includes(review.status)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Goals can no longer be changed in this review.",
+        );
+      }
+
+      const goals = Array.isArray(review.goals) ? [...review.goals] : [];
+      const index = goals.findIndex((goal) => goal.id === goalId);
+      const updatedGoal = {
+        id: goalId,
+        title,
+        description,
+        weight: Math.round(weight * 10) / 10,
+        progress: Math.round(progress * 10) / 10,
+        selfRating: index >= 0 ? goals[index].selfRating || null : null,
+        managerRating: index >= 0 ? goals[index].managerRating || null : null,
+      };
+
+      if (index >= 0) {
+        goals[index] = updatedGoal;
+      } else {
+        goals.push(updatedGoal);
+      }
+
+      const totalWeight = goals.reduce(
+        (sum, goal) => sum + Number(goal.weight || 0),
+        0,
+      );
+      if (totalWeight > 100.001) {
+        throw new HttpsError(
+          "invalid-argument",
+          "Total KPI / Goal weight cannot exceed 100%.",
+        );
+      }
+
+      transaction.update(ref, {
+        goals,
+        status: "selfReview",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    return {goalId};
+  },
+);
+
+exports.submitPerformanceSelfReview = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const reviewId = asNonEmptyString(request.data?.reviewId, "reviewId");
+    const rating = performanceRating(request.data?.rating);
+    const comment =
+      typeof request.data?.comment === "string" ?
+        request.data.comment.trim().slice(0, 2500) :
+        "";
+
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("performanceReviews")
+      .doc(reviewId);
+
+    let employeeName = "Employee";
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const review = snapshot.data();
+      if (!review) {
+        throw new HttpsError("not-found", "Performance review was not found.");
+      }
+      if (review.employeeId !== caller.employeeId) {
+        throw new HttpsError(
+          "permission-denied",
+          "You can submit only your own self review.",
+        );
+      }
+      if (!Array.isArray(review.goals) || review.goals.length === 0) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Add at least one KPI / Goal before submitting.",
+        );
+      }
+      if (review.status === "completed") {
+        throw new HttpsError(
+          "failed-precondition",
+          "This performance review is already completed.",
+        );
+      }
+
+      employeeName = review.employeeName || caller.employeeId;
+      transaction.update(ref, {
+        selfRating: rating,
+        selfComment: comment || null,
+        status: "managerReview",
+        selfReviewedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    const reviewers = await notificationRecipientsForRoles(
+      companyId,
+      ["companyOwner", "hrAdmin", "manager"],
+    );
+    for (const uid of reviewers) {
+      if (uid === request.auth.uid) continue;
+      await createUserNotification({
+        companyId,
+        uid,
+        type: "general",
+        title: "Performance review ready",
+        body: `${employeeName} submitted a self review.`,
+        targetType: "performanceReview",
+        targetId: reviewId,
+      });
+    }
+
+    return {status: "managerReview"};
+  },
+);
+
+exports.finalizePerformanceReview = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!PERFORMANCE_REVIEWER_ROLES.has(caller.role)) {
+      throw new HttpsError(
+        "permission-denied",
+        "You do not have permission to finalize reviews.",
+      );
+    }
+
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const reviewId = asNonEmptyString(request.data?.reviewId, "reviewId");
+    const rating = performanceRating(request.data?.rating);
+    const comment =
+      typeof request.data?.comment === "string" ?
+        request.data.comment.trim().slice(0, 2500) :
+        "";
+
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("performanceReviews")
+      .doc(reviewId);
+
+    let employeeId = null;
+    let employeeName = "Employee";
+
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const review = snapshot.data();
+      if (!review) {
+        throw new HttpsError("not-found", "Performance review was not found.");
+      }
+      if (review.employeeId === caller.employeeId) {
+        throw new HttpsError(
+          "permission-denied",
+          "You cannot finalize your own performance review.",
+        );
+      }
+      if (review.status !== "managerReview") {
+        throw new HttpsError(
+          "failed-precondition",
+          "The employee must submit a self review first.",
+        );
+      }
+
+      employeeId = review.employeeId;
+      employeeName = review.employeeName || review.employeeId;
+
+      transaction.update(ref, {
+        managerRating: rating,
+        managerComment: comment || null,
+        status: "completed",
+        reviewedBy: request.auth.uid,
+        reviewedByName: caller.displayName || caller.employeeId || "Reviewer",
+        completedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    const employeeUid = await performanceIdentityUid(companyId, employeeId);
+    if (employeeUid) {
+      await createUserNotification({
+        companyId,
+        uid: employeeUid,
+        type: "general",
+        title: "Performance review completed",
+        body: `${employeeName}, your performance review has been finalized.`,
+        targetType: "performanceReview",
+        targetId: reviewId,
+      });
+    }
+
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "performance",
+      action: "finalizePerformanceReview",
+      targetType: "performanceReview",
+      targetId: reviewId,
+      summary: `Finalized performance review for ${employeeName}.`,
+    });
+    return {status: "completed"};
+  },
+);
+
+
+const LIFECYCLE_MANAGEMENT_ROLES = new Set(["companyOwner", "hrAdmin"]);
+
+const ONBOARDING_TASKS = [
+  {id: "profile", title: "Confirm personal profile", category: "Employee", employeeCanComplete: true},
+  {id: "documents", title: "Upload required employee documents", category: "Documents", employeeCanComplete: true},
+  {id: "policy", title: "Acknowledge company policies", category: "Compliance", employeeCanComplete: true},
+  {id: "assignment", title: "Confirm department, position and manager", category: "HR", employeeCanComplete: false},
+  {id: "access", title: "Provision work access and accounts", category: "IT / HR", employeeCanComplete: false},
+  {id: "orientation", title: "Complete orientation", category: "HR", employeeCanComplete: true},
+];
+
+const OFFBOARDING_TASKS = [
+  {id: "handover", title: "Complete work handover", category: "Employee", employeeCanComplete: true},
+  {id: "assets", title: "Return company assets", category: "Assets", employeeCanComplete: false},
+  {id: "claims", title: "Clear outstanding claims and payroll items", category: "Finance", employeeCanComplete: false},
+  {id: "exit", title: "Complete exit interview / acknowledgement", category: "HR", employeeCanComplete: true},
+  {id: "access", title: "Revoke company system access", category: "IT / HR", employeeCanComplete: false},
+];
+
+function lifecycleDate(value, fieldName) {
+  const date = asNonEmptyString(value, fieldName);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new HttpsError("invalid-argument", `${fieldName} is invalid.`);
+  }
+  return date;
+}
+
+async function lifecycleEmployee(companyId, employeeId) {
+  const ref = db
+    .collection("companies")
+    .doc(companyId)
+    .collection("employees")
+    .doc(employeeId);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) {
+    throw new HttpsError("not-found", "Employee was not found.");
+  }
+  return {ref, data: snapshot.data()};
+}
+
+exports.getEmployeeLifecycleOverview = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const employeeId = asNonEmptyString(caller.employeeId, "employeeId");
+    const canManage = LIFECYCLE_MANAGEMENT_ROLES.has(caller.role);
+
+    let query = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("employeeLifecycle");
+
+    if (!canManage) {
+      query = query.where("employeeId", "==", employeeId);
+    }
+
+    const snapshot = await query.limit(200).get();
+    const cases = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    return {canManage, currentEmployeeId: employeeId, cases};
+  },
+);
+
+exports.startEmployeeOnboarding = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!LIFECYCLE_MANAGEMENT_ROLES.has(caller.role)) {
+      throw new HttpsError("permission-denied", "HR access is required.");
+    }
+
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const employeeId = asNonEmptyString(request.data?.employeeId, "employeeId");
+    const startDateKey = lifecycleDate(request.data?.startDateKey, "startDateKey");
+    const probationEndDateKey =
+      typeof request.data?.probationEndDateKey === "string" &&
+      request.data.probationEndDateKey.trim().length > 0 ?
+        lifecycleDate(request.data.probationEndDateKey, "probationEndDateKey") :
+        null;
+
+    const employee = await lifecycleEmployee(companyId, employeeId);
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("employeeLifecycle")
+      .doc(`onboarding_${employeeId}_${startDateKey}`);
+
+    await ref.set({
+      companyId,
+      employeeId,
+      employeeName:
+        employee.data.displayName || employee.data.name || employeeId,
+      type: "onboarding",
+      status: "active",
+      startDateKey,
+      endDateKey: null,
+      probationEndDateKey,
+      reason: null,
+      tasks: ONBOARDING_TASKS.map((task) => ({...task, completed: false})),
+      createdBy: request.auth.uid,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: false});
+
+    const uid = await performanceIdentityUid(companyId, employeeId);
+    if (uid) {
+      await createUserNotification({
+        companyId,
+        uid,
+        type: "general",
+        title: "Onboarding started",
+        body: "Your onboarding checklist is ready.",
+        targetType: "employeeLifecycle",
+        targetId: ref.id,
+      });
+    }
+
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "lifecycle",
+      action: "startOnboarding",
+      targetType: "employee",
+      targetId: employeeId,
+      summary: `Started onboarding for ${employeeId}.`,
+    });
+    return {caseId: ref.id};
+  },
+);
+
+exports.startEmployeeOffboarding = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!LIFECYCLE_MANAGEMENT_ROLES.has(caller.role)) {
+      throw new HttpsError("permission-denied", "HR access is required.");
+    }
+
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const employeeId = asNonEmptyString(request.data?.employeeId, "employeeId");
+    if (employeeId === caller.employeeId) {
+      throw new HttpsError(
+        "permission-denied",
+        "You cannot offboard your own account.",
+      );
+    }
+
+    const lastWorkingDateKey = lifecycleDate(
+      request.data?.lastWorkingDateKey,
+      "lastWorkingDateKey",
+    );
+    const reason = asNonEmptyString(request.data?.reason, "reason").slice(0, 1000);
+    const employee = await lifecycleEmployee(companyId, employeeId);
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("employeeLifecycle")
+      .doc(`offboarding_${employeeId}_${lastWorkingDateKey}`);
+
+    await ref.set({
+      companyId,
+      employeeId,
+      employeeName:
+        employee.data.displayName || employee.data.name || employeeId,
+      type: "offboarding",
+      status: "active",
+      startDateKey: null,
+      endDateKey: lastWorkingDateKey,
+      probationEndDateKey: null,
+      reason,
+      tasks: OFFBOARDING_TASKS.map((task) => ({...task, completed: false})),
+      createdBy: request.auth.uid,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: false});
+
+    const uid = await performanceIdentityUid(companyId, employeeId);
+    if (uid) {
+      await createUserNotification({
+        companyId,
+        uid,
+        type: "general",
+        title: "Offboarding workflow started",
+        body: `Your recorded last working day is ${lastWorkingDateKey}.`,
+        targetType: "employeeLifecycle",
+        targetId: ref.id,
+      });
+    }
+
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "lifecycle",
+      action: "startOffboarding",
+      targetType: "employee",
+      targetId: employeeId,
+      summary: `Started offboarding for ${employeeId}.`,
+    });
+    return {caseId: ref.id};
+  },
+);
+
+exports.updateLifecycleTask = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const caseId = asNonEmptyString(request.data?.caseId, "caseId");
+    const taskId = asNonEmptyString(request.data?.taskId, "taskId");
+    const completed = request.data?.completed === true;
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("employeeLifecycle")
+      .doc(caseId);
+
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const item = snapshot.data();
+      if (!item) {
+        throw new HttpsError("not-found", "Lifecycle case was not found.");
+      }
+      if (item.status !== "active") {
+        throw new HttpsError("failed-precondition", "This workflow is closed.");
+      }
+
+      const management = LIFECYCLE_MANAGEMENT_ROLES.has(caller.role);
+      const ownCase = item.employeeId === caller.employeeId;
+      const tasks = Array.isArray(item.tasks) ? [...item.tasks] : [];
+      const index = tasks.findIndex((task) => task.id === taskId);
+      if (index < 0) {
+        throw new HttpsError("not-found", "Checklist task was not found.");
+      }
+      if (!management && (!ownCase || tasks[index].employeeCanComplete !== true)) {
+        throw new HttpsError(
+          "permission-denied",
+          "You cannot update this checklist task.",
+        );
+      }
+
+      tasks[index] = {
+        ...tasks[index],
+        completed,
+        completedBy: completed ? request.auth.uid : null,
+      };
+      transaction.update(ref, {
+        tasks,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    return {updated: true};
+  },
+);
+
+exports.completeEmployeeLifecycle = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!LIFECYCLE_MANAGEMENT_ROLES.has(caller.role)) {
+      throw new HttpsError("permission-denied", "HR access is required.");
+    }
+
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const caseId = asNonEmptyString(request.data?.caseId, "caseId");
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("employeeLifecycle")
+      .doc(caseId);
+
+    let item;
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      item = snapshot.data();
+      if (!item) {
+        throw new HttpsError("not-found", "Lifecycle case was not found.");
+      }
+      const tasks = Array.isArray(item.tasks) ? item.tasks : [];
+      if (tasks.length === 0 || tasks.some((task) => task.completed !== true)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Complete every checklist task first.",
+        );
+      }
+
+      if (item.type === "offboarding") {
+        const assignedAssets = await db
+          .collection("companies")
+          .doc(companyId)
+          .collection("assets")
+          .where("assignedEmployeeId", "==", item.employeeId)
+          .where("status", "==", "assigned")
+          .limit(1)
+          .get();
+        if (!assignedAssets.empty) {
+          throw new HttpsError(
+            "failed-precondition",
+            "Return all company assets before completing offboarding.",
+          );
+        }
+      }
+
+      transaction.update(ref, {
+        status: "completed",
+        completedBy: request.auth.uid,
+        completedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      const employeeRef = db
+        .collection("companies")
+        .doc(companyId)
+        .collection("employees")
+        .doc(item.employeeId);
+
+      if (item.type === "onboarding") {
+        transaction.set(employeeRef, {
+          lifecycleStatus: "active",
+          employmentStartDateKey: item.startDateKey || null,
+          probationEndDateKey: item.probationEndDateKey || null,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+      } else {
+        transaction.set(employeeRef, {
+          lifecycleStatus: "offboarded",
+          employmentEndDateKey: item.endDateKey || null,
+          isActive: false,
+          updatedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+      }
+    });
+
+    const uid = await performanceIdentityUid(companyId, item.employeeId);
+    if (uid) {
+      await db.collection("identities").doc(uid).set({
+        isActive: item.type === "onboarding",
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+
+      await createUserNotification({
+        companyId,
+        uid,
+        type: "general",
+        title: item.type === "onboarding" ?
+          "Onboarding completed" :
+          "Offboarding completed",
+        body: item.type === "onboarding" ?
+          "Your onboarding checklist is complete." :
+          "Your employee lifecycle workflow has been completed.",
+        targetType: "employeeLifecycle",
+        targetId: caseId,
+      });
+    }
+
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "lifecycle",
+      action: item.type === "onboarding" ?
+        "completeOnboarding" :
+        "completeOffboarding",
+      targetType: "employee",
+      targetId: item.employeeId,
+      summary: `${item.type} workflow completed for ${item.employeeId}.`,
+    });
+    return {status: "completed"};
+  },
+);
+
+
+const ASSET_MANAGEMENT_ROLES = new Set(["companyOwner", "hrAdmin"]);
+
+function assetDate(value, fieldName) {
+  if (value === null || value === undefined || value === "") return null;
+  const date = asNonEmptyString(value, fieldName);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new HttpsError("invalid-argument", `${fieldName} is invalid.`);
+  }
+  return date;
+}
+
+async function assetEmployee(companyId, employeeId) {
+  const ref = db
+    .collection("companies")
+    .doc(companyId)
+    .collection("employees")
+    .doc(employeeId);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) {
+    throw new HttpsError("not-found", "Employee was not found.");
+  }
+  return snapshot.data();
+}
+
+exports.getAssetOverview = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const employeeId = asNonEmptyString(caller.employeeId, "employeeId");
+    const canManage = ASSET_MANAGEMENT_ROLES.has(caller.role);
+
+    let query = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("assets");
+
+    if (!canManage) {
+      query = query.where("assignedEmployeeId", "==", employeeId);
+    }
+
+    const snapshot = await query.limit(500).get();
+    const assets = snapshot.docs.map((doc) => ({id: doc.id, ...doc.data()}));
+    return {canManage, currentEmployeeId: employeeId, assets};
+  },
+);
+
+exports.createCompanyAsset = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!ASSET_MANAGEMENT_ROLES.has(caller.role)) {
+      throw new HttpsError("permission-denied", "HR asset access is required.");
+    }
+
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const assetTag = asNonEmptyString(request.data?.assetTag, "assetTag")
+      .trim().slice(0, 80);
+    const name = asNonEmptyString(request.data?.name, "name").slice(0, 160);
+    const category = asNonEmptyString(request.data?.category, "category")
+      .slice(0, 80);
+    const serialNumber =
+      typeof request.data?.serialNumber === "string" ?
+        request.data.serialNumber.trim().slice(0, 160) : "";
+    const notes =
+      typeof request.data?.notes === "string" ?
+        request.data.notes.trim().slice(0, 1500) : "";
+    const purchaseDateKey = assetDate(
+      request.data?.purchaseDateKey,
+      "purchaseDateKey",
+    );
+    const warrantyExpiryDateKey = assetDate(
+      request.data?.warrantyExpiryDateKey,
+      "warrantyExpiryDateKey",
+    );
+
+    const collection = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("assets");
+
+    const duplicate = await collection
+      .where("assetTag", "==", assetTag)
+      .limit(1)
+      .get();
+    if (!duplicate.empty) {
+      throw new HttpsError(
+        "already-exists",
+        "This Asset ID / Tag is already registered.",
+      );
+    }
+
+    const ref = collection.doc();
+    await ref.set({
+      companyId,
+      assetTag,
+      name,
+      category,
+      serialNumber,
+      purchaseDateKey,
+      warrantyExpiryDateKey,
+      notes,
+      status: "available",
+      assignedEmployeeId: null,
+      assignedEmployeeName: null,
+      assignedAt: null,
+      createdBy: request.auth.uid,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "asset",
+      action: "createAsset",
+      targetType: "asset",
+      targetId: ref.id,
+      summary: `Created asset ${assetTag} (${name}).`,
+    });
+    return {assetId: ref.id};
+  },
+);
+
+exports.assignCompanyAsset = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!ASSET_MANAGEMENT_ROLES.has(caller.role)) {
+      throw new HttpsError("permission-denied", "HR asset access is required.");
+    }
+
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const assetId = asNonEmptyString(request.data?.assetId, "assetId");
+    const employeeId = asNonEmptyString(request.data?.employeeId, "employeeId");
+    const employee = await assetEmployee(companyId, employeeId);
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("assets")
+      .doc(assetId);
+
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const asset = snapshot.data();
+      if (!asset) {
+        throw new HttpsError("not-found", "Asset was not found.");
+      }
+      if (asset.status !== "available") {
+        throw new HttpsError(
+          "failed-precondition",
+          "Only available assets can be assigned.",
+        );
+      }
+      transaction.update(ref, {
+        status: "assigned",
+        assignedEmployeeId: employeeId,
+        assignedEmployeeName:
+          employee.displayName || employee.name || employeeId,
+        assignedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    const uid = await performanceIdentityUid(companyId, employeeId);
+    if (uid) {
+      await createUserNotification({
+        companyId,
+        uid,
+        type: "general",
+        title: "Company asset assigned",
+        body: "A company asset has been assigned to you.",
+        targetType: "asset",
+        targetId: assetId,
+      });
+    }
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "asset",
+      action: "assignAsset",
+      targetType: "asset",
+      targetId: assetId,
+      summary: `Assigned asset to employee ${employeeId}.`,
+    });
+    return {status: "assigned"};
+  },
+);
+
+exports.returnCompanyAsset = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!ASSET_MANAGEMENT_ROLES.has(caller.role)) {
+      throw new HttpsError("permission-denied", "HR asset access is required.");
+    }
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const assetId = asNonEmptyString(request.data?.assetId, "assetId");
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("assets")
+      .doc(assetId);
+
+    const snapshot = await ref.get();
+    if (!snapshot.exists) {
+      throw new HttpsError("not-found", "Asset was not found.");
+    }
+    if (snapshot.data().status !== "assigned") {
+      throw new HttpsError(
+        "failed-precondition",
+        "This asset is not currently assigned.",
+      );
+    }
+
+    await ref.update({
+      status: "available",
+      assignedEmployeeId: null,
+      assignedEmployeeName: null,
+      returnedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "asset",
+      action: "returnAsset",
+      targetType: "asset",
+      targetId: assetId,
+      summary: "Returned company asset.",
+    });
+    return {status: "available"};
+  },
+);
+
+exports.updateCompanyAssetStatus = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!ASSET_MANAGEMENT_ROLES.has(caller.role)) {
+      throw new HttpsError("permission-denied", "HR asset access is required.");
+    }
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const assetId = asNonEmptyString(request.data?.assetId, "assetId");
+    const status = asNonEmptyString(request.data?.status, "status");
+    if (!["available", "repair", "retired"].includes(status)) {
+      throw new HttpsError("invalid-argument", "Invalid asset status.");
+    }
+
+    const ref = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("assets")
+      .doc(assetId);
+    const snapshot = await ref.get();
+    if (!snapshot.exists) {
+      throw new HttpsError("not-found", "Asset was not found.");
+    }
+    if (snapshot.data().status === "assigned") {
+      throw new HttpsError(
+        "failed-precondition",
+        "Return the asset before changing its status.",
+      );
+    }
+    await ref.update({
+      status,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await writeAuditLog({
+      companyId,
+      actor: auditActor(request, caller),
+      module: "asset",
+      action: "updateAssetStatus",
+      targetType: "asset",
+      targetId: assetId,
+      summary: `Changed asset status to ${status}.`,
+    });
+    return {status};
+  },
+);
+
+
+exports.getAuditLog = onCall(
+  {enforceAppCheck: false},
+  async (request) => {
+    const caller = await loadCaller(request);
+    if (!["companyOwner", "hrAdmin"].includes(caller.role)) {
+      throw new HttpsError(
+        "permission-denied",
+        "Only Company Owner or HR can view company audit history.",
+      );
+    }
+
+    const companyId = asNonEmptyString(caller.companyId, "companyId");
+    const allowedAuditModules = new Set([
+      "attendance",
+      "leave",
+      "claims",
+      "payroll",
+      "employee",
+      "asset",
+      "lifecycle",
+      "performance",
+      "documents",
+      "workforce",
+    ]);
+    const requestedModule =
+      typeof request.data?.module === "string" ?
+        request.data.module.trim() :
+        "";
+    const module = requestedModule.length > 0 ? requestedModule : null;
+    if (module && !allowedAuditModules.has(module)) {
+      throw new HttpsError("invalid-argument", "Invalid audit module.");
+    }
+    const action =
+      typeof request.data?.action === "string" &&
+      request.data.action.trim().length > 0 ?
+        request.data.action.trim().slice(0, 80) :
+        null;
+    const actorEmployeeId =
+      typeof request.data?.actorEmployeeId === "string" &&
+      request.data.actorEmployeeId.trim().length > 0 ?
+        request.data.actorEmployeeId.trim().slice(0, 120) :
+        null;
+    const startDateKey =
+      typeof request.data?.startDateKey === "string" ?
+        request.data.startDateKey.trim() :
+        null;
+    const endDateKey =
+      typeof request.data?.endDateKey === "string" ?
+        request.data.endDateKey.trim() :
+        null;
+
+    let query = db
+      .collection("companies")
+      .doc(companyId)
+      .collection("auditLogs")
+      .orderBy("createdAt", "desc");
+
+    if (module) query = query.where("module", "==", module);
+    if (action) query = query.where("action", "==", action);
+    if (actorEmployeeId) {
+      query = query.where("actorEmployeeId", "==", actorEmployeeId);
+    }
+    if (startDateKey) {
+      query = query.where(
+        "createdAt",
+        ">=",
+        Timestamp.fromDate(new Date(`${startDateKey}T00:00:00.000Z`)),
+      );
+    }
+    if (endDateKey) {
+      query = query.where(
+        "createdAt",
+        "<=",
+        Timestamp.fromDate(new Date(`${endDateKey}T23:59:59.999Z`)),
+      );
+    }
+
+    const snapshot = await query.limit(200).get();
+    return {
+      entries: snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      })),
+    };
   },
 );

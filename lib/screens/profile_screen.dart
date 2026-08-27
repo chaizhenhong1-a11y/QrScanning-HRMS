@@ -5,6 +5,13 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/storage/session_store.dart';
 import '../features/identity/application/identity_service.dart';
+import '../features/reports/presentation/pages/reports_page.dart';
+import '../features/workforce_time/presentation/pages/workforce_time_page.dart';
+import '../features/employee_documents/presentation/pages/employee_documents_page.dart';
+import '../features/performance/presentation/pages/performance_page.dart';
+import '../features/lifecycle/presentation/pages/employee_lifecycle_page.dart';
+import '../features/assets/presentation/pages/asset_management_page.dart';
+import '../features/audit/presentation/pages/audit_log_page.dart';
 import '../services/user_service.dart';
 import 'edit_profile_screen.dart';
 import 'work_time_settings_screen.dart';
@@ -239,6 +246,93 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 const SizedBox(height: 8),
                 // 仅老板可见的工作时间设置
                 if (user?.role == 'boss') ...[
+                  _buildMenuItem(
+                    icon: Icons.history_rounded,
+                    title: 'Audit Log',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const AuditLogPage()),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  _buildMenuItem(
+                    icon: Icons.inventory_2_rounded,
+                    title: 'Asset Management',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const AssetManagementPage(),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  _buildMenuItem(
+                    icon: Icons.route_rounded,
+                    title: 'Onboarding & Offboarding',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const EmployeeLifecyclePage(),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  _buildMenuItem(
+                    icon: Icons.insights_rounded,
+                    title: 'Performance & KPI',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const PerformancePage(),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  _buildMenuItem(
+                    icon: Icons.folder_copy_rounded,
+                    title: 'Employee Documents',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const EmployeeDocumentsPage(),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  _buildMenuItem(
+                    icon: Icons.more_time_rounded,
+                    title: 'Holiday, Shift & Overtime',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const WorkforceTimePage(),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  _buildMenuItem(
+                    icon: Icons.analytics_rounded,
+                    title: 'Reports & Analytics',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const ReportsPage()),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
                   _buildMenuItem(
                     icon: Icons.schedule_rounded,
                     title: 'Work Time Settings',

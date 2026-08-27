@@ -2,6 +2,221 @@
 
 All notable changes to the `qr_scanning` application are documented in this file.
 
+## [3.1.3] - 2026-08-27
+
+### Fixed
+- Removed the unused Firestore Rules `invitationPath` helper.
+- Replaced the invalid `canManageCompany()` Rules reference in Employee Documents with the existing company-role authorization expression.
+- Preserved the same Owner / HR Admin and employee-self document read policy while eliminating the Rules compiler warnings.
+
+### Release readiness
+- Added a structured Owner / HR Admin / Manager / Employee release verification checklist.
+- Added smoke-test coverage for Attendance, Leave, Claims, Payroll, Workforce Time, Documents, Performance, Lifecycle, Assets, Notifications, Audit Log, responsive UI, and final release gates.
+
+### Changed
+- Bumped the application version to `3.1.3+41`.
+
+## [3.1.2] - 2026-08-27
+
+### Hardened
+- Added a shared Firebase/Auth error-to-message mapper for consistent user-facing failures.
+- Audit Log now displays actionable backend error messages instead of a generic failure.
+- Expanded immutable server-side audit coverage across additional administrative workflows.
+- Added audit hooks for: updateAttendanceSettings, reviewOvertimeRequest, registerEmployeeDocument, deleteEmployeeDocument.
+- Continued the Phase 022 policy of hardening existing modules instead of adding new product modules.
+
+### Changed
+- Bumped the application version to `3.1.2+40`.
+
+## [3.1.1] - 2026-08-27
+
+### Hardened
+- Added duplicate-refresh protection to the Audit Log screen.
+- Added reusable `AsyncActionGuard` for sensitive UI actions to prevent accidental double submission.
+- Added server-side allow-list validation for Audit Log module filters.
+- Bounded Audit Log action and actor filter input lengths before querying.
+- Preserved server-authoritative audit access and immutable client rules.
+
+### Changed
+- Bumped the application version to `3.1.1+39`.
+
+## [3.1.0] - 2026-08-27
+
+### Added
+- Added immutable company Audit Log / Admin Activity History.
+- Added Company Owner / HR Admin Audit Log page.
+- Added filters for module, action, actor employee ID, and date range.
+- Audit records capture actor UID, actor employee ID, actor name, role, module, action, target type, target ID, summary, result, metadata, and server timestamp.
+- Added server-authoritative `getAuditLog` Cloud Function.
+- Added reusable backend `writeAuditLog` helper for sensitive operations.
+- Added auditing for company asset creation, assignment, return, and status changes.
+- Added auditing for onboarding/offboarding start and lifecycle completion.
+- Added auditing for performance-review finalization.
+- Added auditing for payroll finalization.
+- Added auditing hooks for Claim and Leave approval workflows where the current function implementation exposes the standard decision return.
+- Added Profile entry for Audit Log.
+
+### Security
+- Audit records cannot be created, edited, or deleted directly by clients.
+- Company audit history is accessible only through Cloud Functions.
+- Only Company Owner and HR Admin can query company audit history.
+- Audit timestamps are written by the server.
+
+### Architecture
+- Critical administrative actions can now call a shared audit writer, allowing future modules to be covered without duplicating persistence logic.
+
+### Changed
+- Bumped the application version to `3.1.0+38`.
+
+
+## [3.0.0] - 2026-08-27
+
+### Added
+- Added professional Company Asset Management.
+- Added asset registration with Asset ID / Tag, category, serial number, purchase date, warranty expiry, and notes.
+- Added Available, Assigned, Repair, and Retired asset states.
+- Added employee assignment and return workflows.
+- Employees can view assets currently assigned to them through My Assets.
+- Company Owner / HR Admin can view and manage the company asset inventory.
+- Added company asset assignment notifications.
+- Added Profile entry for Asset Management.
+- Added server-authoritative asset Cloud Functions.
+
+### Integrated
+- Offboarding now checks the live asset inventory before completion.
+- An employee with any assigned company asset cannot complete offboarding until all assets have been returned.
+- Returned assets become available for reassignment.
+
+### Security
+- Asset inventory is company-scoped.
+- Employees can retrieve only assets assigned to themselves.
+- Asset registration, assignment, return, repair, and retirement require Company Owner / HR Admin permission.
+- Direct Firestore access to asset inventory is disabled; operations are validated through Cloud Functions.
+
+### Changed
+- Bumped the application version to `3.0.0+37`.
+
+
+## [2.9.0] - 2026-08-27
+
+### Added
+- Added Employee Onboarding & Offboarding lifecycle module.
+- Added HR-managed onboarding workflows with start date and optional probation end date.
+- Added onboarding checklist for employee profile, required documents, policy acknowledgement, HR assignment, access provisioning, and orientation.
+- Added offboarding workflow with last working day, exit reason, handover, asset return, finance clearance, exit acknowledgement, and access revocation.
+- Employees can complete only checklist items explicitly assigned to the employee.
+- Company Owner / HR Admin can manage all checklist items and close completed lifecycle workflows.
+- Added lifecycle progress indicators and active/completed workflow status.
+- Added Notification Center events when onboarding/offboarding starts and completes.
+- Completing onboarding records employment start/probation data on the employee profile.
+- Completing offboarding marks the employee and identity inactive after all exit tasks are completed.
+- Added Profile entry for Onboarding & Offboarding.
+- Added server-authoritative lifecycle Cloud Functions.
+
+### Security
+- Employees can see only their own lifecycle workflows.
+- Company Owner / HR Admin can manage lifecycle workflows only inside their company.
+- Company Owner / HR Admin cannot initiate offboarding for their own account through this workflow.
+- Firestore lifecycle documents cannot be directly read or mutated by clients.
+
+### Changed
+- Bumped the application version to `2.9.0+36`.
+
+
+## [2.8.0] - 2026-08-27
+
+### Added
+- Added Performance Review + KPI / Goals module.
+- Employees can start an annual review, create KPI / Goals, assign weights, track progress, submit a self-rating, and add self-review comments.
+- Manager / HR / Owner can view team reviews and finalize employee performance with a manager rating and review comments.
+- Added Goal Setting, Self Review, Manager Review, and Completed workflow states.
+- Added validation for KPI weight, progress percentages, rating range, and total goal weight.
+- Added management workflow for starting an employee review by Employee ID.
+- Added Performance & KPI entry in Profile.
+- Added Notification Center events when an employee submits a self review and when management finalizes the review.
+- Added server-authoritative `getPerformanceOverview`, `ensurePerformanceReview`, `upsertPerformanceGoal`, `submitPerformanceSelfReview`, and `finalizePerformanceReview` Cloud Functions.
+
+### Security
+- Employees can edit and submit only their own performance review.
+- Manager / HR / Owner can review other employees but cannot finalize their own performance review.
+- Performance Review Firestore documents cannot be directly read or mutated by the client; all access is scoped and validated through Cloud Functions.
+
+### Changed
+- Bumped the application version to `2.8.0+35`.
+
+
+## [2.7.0] - 2026-08-27
+
+### Added
+- Added Employee Documents / HR File Vault with PDF and image uploads.
+- Added IC / Passport, Offer Letter, Contract, Certificate, Medical, and Other document categories.
+- Added employee self-document access and Company Owner / HR company-wide document management.
+- Added optional document expiry dates and document notes.
+- Added secure Firebase Storage paths scoped by company and employee.
+- Added Firestore document metadata with uploader, employee, content type, size, and expiry information.
+- Added secure-link copy action and document removal workflow.
+- Added Notification Center message when a document with an expiry date is registered.
+- Added Profile entry for Employee Documents.
+- Added server-authoritative `registerEmployeeDocument` and `deleteEmployeeDocument` Cloud Functions.
+
+### Security
+- Employees can access only their own document records and Storage path.
+- Company Owner and HR Admin can manage employee documents within their own company only.
+- Firestore document metadata cannot be directly mutated by clients.
+- Uploads are limited to PDF/JPEG/PNG and 15 MB.
+- Storage paths are validated again by Cloud Functions before metadata registration.
+
+### Changed
+- Added `file_picker` for cross-platform document selection.
+- Bumped the application version to `2.7.0+34`.
+
+
+## [2.6.0] - 2026-08-27
+
+### Added
+- Added Company Holiday management for Company Owner and HR Admin.
+- Added employee shift assignments with date, shift name, start time, and end time.
+- Added employee Overtime requests with date, duration, reason, Pending / Approved / Rejected workflow.
+- Added Manager / HR / Owner overtime approval while preventing self-approval.
+- Added Holiday, Shift & Overtime management page with month filtering and Veyra Design System styling.
+- Added Profile entry for the new workforce-time module.
+- Added server-authoritative `getWorkforceTimeOverview`, `upsertCompanyHoliday`, `assignEmployeeShift`, `submitOvertimeRequest`, and `reviewOvertimeRequest` Cloud Functions.
+
+### Security
+- Holiday and shift mutations are Cloud Function only.
+- Employees see only their own shift and overtime records; management roles can view company workforce-time records.
+- Employees cannot approve or reject their own overtime request.
+- Company Holiday creation is limited to Company Owner and HR Admin.
+
+### Changed
+- Bumped the application version to `2.6.0+33`.
+
+
+## [2.5.0] - 2026-08-27
+
+### Added
+- Added Professional Reports & Analytics for Company Owner, HR Admin, and Manager.
+- Added month-based Workforce, Attendance, Leave, and Expense Claims analytics.
+- Added active headcount, employees present, attendance records, completion count, late count, and early-leave count.
+- Added approved leave request/day totals and pending leave workload.
+- Added claim volume, Pending / Approved / Paid counts, and monthly claim amount.
+- Added confidential Payroll summary for Company Owner and HR Admin only.
+- Added Copy Report action for quick sharing of the monthly HR summary.
+- Added Reports & Analytics entry to the management Profile menu.
+- Added server-authoritative `getMonthlyHrReport` Cloud Function.
+
+### Privacy
+- Managers can access operational HR analytics but do not receive payroll totals.
+- Payroll status, payroll employee count, and total net pay are returned only to Company Owner and HR Admin.
+
+### Architecture
+- Added independent Reports domain, repository, application service, and presentation page.
+- Aggregation is performed server-side rather than trusting client-calculated management totals.
+
+### Changed
+- Bumped the application version to `2.5.0+32`.
+
+
 ## [2.4.0] - 2026-08-27
 
 ### Added

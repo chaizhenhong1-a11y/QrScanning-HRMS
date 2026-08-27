@@ -13,10 +13,6 @@ service cloud.firestore {
       return /databases/$(database)/documents/companies/$(tenantId);
     }
 
-    function invitationPath(invitationId) {
-      return /databases/$(database)/documents/invitations/$(invitationId);
-    }
-
     function hasUserProfile() {
       return signedIn() && exists(userPath(request.auth.uid));
     }
@@ -211,6 +207,64 @@ service cloud.firestore {
 
         // Claim mutations are server-authoritative via Cloud Functions.
         allow create, update, delete: if false;
+      }
+
+
+
+
+
+
+
+      match /auditLogs/{auditId} {
+        // Immutable company audit history is exposed only through Cloud Functions.
+        allow read, create, update, delete: if false;
+      }
+
+      match /assets/{assetId} {
+        // Asset inventory and assignment are scoped through Cloud Functions.
+        allow read, create, update, delete: if false;
+      }
+
+      match /employeeLifecycle/{caseId} {
+        // Lifecycle data is exposed only through scoped Cloud Functions.
+        allow read, create, update, delete: if false;
+      }
+
+      match /performanceReviews/{reviewId} {
+        // Performance review data is read and mutated through Cloud Functions
+        // so manager/employee scoping remains server-authoritative.
+        allow read, create, update, delete: if false;
+      }
+
+      match /employeeDocuments/{documentId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && (
+            (activeUser() && companyRole() in ['companyOwner', 'hrAdmin'])
+            || resource.data.employeeId == employeeId()
+          );
+
+        // Metadata mutations are validated by Cloud Functions.
+        allow create, update, delete: if false;
+      }
+
+      match /holidays/{holidayId} {
+        allow read: if activeUser() && companyId() == tenantId;
+        allow write: if false;
+      }
+
+      match /employeeShifts/{shiftId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && (canManageAttendance() || resource.data.employeeId == employeeId());
+        allow write: if false;
+      }
+
+      match /overtimeRequests/{requestId} {
+        allow read: if activeUser()
+          && companyId() == tenantId
+          && (canManageAttendance() || resource.data.employeeId == employeeId());
+        allow write: if false;
       }
 
       match /attendanceQr/{documentId} {

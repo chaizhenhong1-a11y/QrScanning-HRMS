@@ -64,6 +64,31 @@ service firebase.storage {
       allow update: if false;
     }
 
+
+    match /companies/{companyId}/employee_documents/{employeeId}/{fileName} {
+      allow create: if activeUser()
+        && profile().companyId == companyId
+        && (
+          profile().employeeId == employeeId
+          || isApprover()
+        )
+        && request.resource.size < 15 * 1024 * 1024
+        && (
+          request.resource.contentType == 'application/pdf'
+          || request.resource.contentType.matches('image/.*')
+        );
+
+      allow read: if activeUser()
+        && profile().companyId == companyId
+        && (
+          profile().employeeId == employeeId
+          || isApprover()
+        );
+
+      // Physical-file deletion is performed by trusted backend workflow.
+      allow update, delete: if false;
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }
